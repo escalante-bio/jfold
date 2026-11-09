@@ -22,6 +22,8 @@ MODELS = {
     "OpenFold3": "openfold3",
     "ESMFold2": "esmfold2",
     "BioEmu2": "bioemu2",
+    "AtlasFold-M": "atlasfold_m",
+    "AtlasFold": "atlasfold",
 }
 def is_module(node) -> bool:
     return isinstance(node, dict) and "module" in node
@@ -51,6 +53,9 @@ def layers(stack) -> str:
     """A pair stack's depth and layer kind, e.g. "48 Pairformer"."""
     if name(stack) == "Mol1Pairformer":
         return " + ".join(layers(stack["fields"][k]) for k in ("pairmixer", "pairformer"))
+    if name(stack) == "AtlasFoldPairformer":
+        f = stack["fields"]
+        return f"{depth(f['pair_only'])} pair-only + {layers(f['full'])}"
     kind = name(stack["fields"]["layers"]).removesuffix("Layer")
     return f"{depth(stack)} {kind}"
 
@@ -87,6 +92,13 @@ def trunk(node) -> tuple[dict, list[str]]:
             return {"templates": None, "msa": f["msa"], "pairformer": f["trunk"]}, other
         case "RecyclingPairTrunk":
             return {"templates": None, "msa": f["msa"], "pairformer": f["trunk"]}, []
+        case "AtlasFoldTrunk":
+            lm = f["language_model"]["fields"]["stack"]
+            other = [
+                f"AtlasLM every pass ({f['mlm_rate']:.0%} masked)",
+                f"LM pair stack ({first_array(lm)['shape'][0]} layers)",
+            ]
+            return {"templates": f["templates"], "msa": None, "pairformer": f["pairformer"]}, other
     raise ValueError(f"unknown trunk {name(node)}")
 
 
@@ -100,13 +112,20 @@ def diffusion(node) -> tuple[str, list[str]]:
         case "DualStreamModule":
             t = f["transformer"]["fields"]
             return f"dual-stream: {depth(t['tokens'])} token + {depth(t['atoms'])} atom layers", []
+    if node["module"].startswith("jfold.models.atlasfold:"):
+        return f"{depth(f['transformer'])} layers, on atom14 slots", []
     return f"{depth(f['transformer'])} layers", []
 
 
 def confidence(node) -> tuple[str, list[str]]:
     if not is_module(node):
         return "—", []
+    if name(node) == "MultimerConfidence":
+        return confidence(node["fields"]["module"])
     f = node["fields"]
+    if name(node) == "MonomerConfidence":
+        stacks = f"{layers(f['single_stack'])} + {layers(f['pair_stack'])} (pair only)"
+        return f"{stacks}, per-token pLDDT", []
     per = "atom" if name(f["plddt"]) == "AtomHead" else "token"
     other = ["confidence pair inputs"] * is_module(f.get("pair_inputs"))
     return f"{layers(f['stack'])}, per-{per} pLDDT", other
