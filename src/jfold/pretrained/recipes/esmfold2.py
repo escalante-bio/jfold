@@ -146,6 +146,18 @@ def _attach_esmc(experimental: bool, esmc_name: str, model: eqx.Module, load) ->
     return eqx.tree_at(lambda m: m.trunk_init.esmc, model, esmc, is_leaf=lambda x: x is None)
 
 
+# The weights' licence (the `esm` package's and the model cards'), which copies carry.
+LICENSE = '''**License (MIT)**
+
+Copyright 2026 Chan Zuckerberg Biohub, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+'''
+
 RELEASES = {
     name: Release(
         upstream="esm",
@@ -156,6 +168,7 @@ RELEASES = {
         convert=partial(_convert, experimental),
         assemble=partial(_attach_esmc, experimental, ESMC.get(name, "esmc_6b")),
         detach=_detach_esmc,
+        license=LICENSE,
     )
     for name, (repo, experimental) in REPOS.items()
 } | {
@@ -166,6 +179,7 @@ RELEASES = {
         fetch=partial(_fetch, REPOS[fold][0]),
         build=partial(_build, REPOS[fold][1]),
         convert=_convert_esmc,
+        license=LICENSE,
     )
     for esmc, fold in ESMC_SOURCES.items()
 }

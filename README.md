@@ -140,4 +140,4 @@ training heads.
 ## License
 
 The code is MIT-licensed ([LICENSE](LICENSE)). The converted weights keep their upstream
-licences, noted beside each copy on the hub.
+licences, listed in the [hub repository's model card](https://huggingface.co/escalante-bio/jfold).
