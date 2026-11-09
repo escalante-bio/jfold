@@ -599,6 +599,56 @@ class ESMC(eqx.Module):
         return jnp.concatenate([hidden, self.norm(x)[None]])
 
 
+# ESMC's vocabulary (`esm`'s `EsmSequenceTokenizer`): its token for each special and
+# residue letter; 64 embedding rows.
+ESMC_VOCAB: dict[str, int] = {
+    token: i
+    for i, token in enumerate(
+        ["<cls>", "<pad>", "<eos>", "<unk>", *"LAGVSERTIDPKQNFYMHWCXBUZO.-|", "<mask>"]
+    )
+}
+
+
+class MaskedLMHead(eqx.Module):
+    """ESMC's masked-language-model head (`EsmcForMaskedLM.lm_head`): a linear layer, GELU,
+    layer norm and a linear layer to the vocabulary."""
+
+    dense: Linear
+    norm: LayerNorm
+    output: Linear  # D -> vocabulary
+
+    def __call__(self, x: Float[Array, "... D"]) -> Float[Array, "... V"]:
+        return self.output(self.norm(jax.nn.gelu(self.dense(x), approximate=False)))
+
+
+class ESMCForMaskedLM(eqx.Module):
+    """ESMC with its masked-language-model head: logits over the vocabulary at every
+    position of `tokens` (probability vectors, so a soft sequence's gradient reaches them;
+    mask a position with `ESMC_VOCAB["<mask>"]`)."""
+
+    head: MaskedLMHead
+    # The language model. None only as stored: `jfold.pretrained` attaches the shared ESMC
+    # on loading.
+    esmc: ESMC | None = None
+
+    def __call__(
+        self,
+        tokens: Float[Array, "L V"],
+        sequence_id: Int[Array, " L"] | None = None,
+        mask: Bool[Array, " L"] | None = None,
+        *,
+        key: PRNGKeyArray | None = None,
+    ) -> Float[Array, "L V"]:
+        """`sequence_id`: which chain each position is in (one chain by default); `mask`:
+        the positions attended to (all by default)."""
+        if self.esmc is None:
+            raise ValueError("this model has no ESMC: load it with `jfold.pretrained`")
+        length = tokens.shape[0]
+        sequence_id = jnp.zeros(length, int) if sequence_id is None else sequence_id
+        mask = jnp.ones(length, bool) if mask is None else mask
+        return self.head(self.esmc(tokens, sequence_id, mask, key=key)[-1])
+
+
 class LanguageModelPair(eqx.Module):
     """The pair from the language model's hidden states: each layer projected, combined
     by learned softmax weights, then an outer product and difference through an MLP."""

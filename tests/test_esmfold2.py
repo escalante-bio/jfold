@@ -591,6 +591,31 @@ def test_esmc():
     assert_finite((out, grads))
 
 
+def test_esmc_for_masked_lm():
+    """`EsmcForMaskedLM`'s logits (ESMC and its head) on a sequence with masked positions,
+    and the vocabulary jfold names its tokens with."""
+    from esm.models.esmc import EsmcConfig, EsmcForMaskedLM
+    from esm.tokenization import EsmSequenceTokenizer
+
+    from jfold.models.esmfold2 import ESMC_VOCAB
+
+    assert ESMC_VOCAB == EsmSequenceTokenizer().get_vocab()
+    m = randomize(
+        EsmcForMaskedLM(
+            EsmcConfig(hidden_size=32, num_attention_heads=4, num_hidden_layers=3)
+        ),
+        0,
+    )
+    tokens = torch.tensor([[0, 5, 32, 13, 9, 32, 21, 2]])  # <cls> ... <mask> ... <eos>
+    with torch.no_grad():
+        ref = m(input_ids=tokens).logits[0]
+    model = convert.esmc_for_masked_lm(m)
+    vectors = jax.nn.one_hot(tokens[0].numpy(), 64)
+    out = _call(lambda model, v: model(v, key=KEY), model, vectors)
+    _check(out, ref)
+    assert_finite(out)
+
+
 def test_esmc_residues_match_upstream():
     """ESMC's input ids for each protein residue, X and unusual letters included, are the
     ones upstream's input builder gives."""

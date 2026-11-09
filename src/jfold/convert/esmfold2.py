@@ -30,9 +30,11 @@ from jfold.models.esmfold2 import (
     ClampedOuterProductMean,
     ConfidenceModule,
     DiffusionModule,
+    ESMCForMaskedLM,
     ESMCLayer,
     InputEmbedder,
     LanguageModelPair,
+    MaskedLMHead,
     Parcae,
     ParcaeTrunk,
     RecyclingPairTrunk,
@@ -445,6 +447,16 @@ def esmc(m) -> ESMC:
         norm=layer_norm(m.transformer.norm),
         rope_base=float(m.transformer.blocks[0].attn.rotary.base),
     )
+
+
+def masked_lm_head(m) -> MaskedLMHead:
+    """`EsmcForMaskedLM.lm_head` (Linear, GELU, LayerNorm, Linear)."""
+    return MaskedLMHead(dense=linear(m[0]), norm=layer_norm(m[2]), output=linear(m[3]))
+
+
+def esmc_for_masked_lm(m) -> ESMCForMaskedLM:
+    """`EsmcForMaskedLM`: ESMC and its head."""
+    return ESMCForMaskedLM(head=masked_lm_head(m.lm_head), esmc=esmc(m.esmc))
 
 
 def parcae(m) -> Parcae:

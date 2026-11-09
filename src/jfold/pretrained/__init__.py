@@ -36,7 +36,7 @@ import jax
 from jfold import io
 from jfold.model import StructureModel
 from jfold.models.atlasfold import AtlasLM
-from jfold.models.esmfold2 import ESMC
+from jfold.models.esmfold2 import ESMC, ESMCForMaskedLM
 
 
 @dataclass(frozen=True)
@@ -365,6 +365,22 @@ def esmc_600m(**options: Unpack[LoadOptions]) -> ESMC:
 def esmc_6b(**options: Unpack[LoadOptions]) -> ESMC:
     """ESMC-6B, the language model the other ESMFold2 checkpoints read."""
     return cast(ESMC, load("esmc_6b", **options))
+
+
+def esmc_300m_mlm(**options: Unpack[LoadOptions]) -> ESMCForMaskedLM:
+    """ESMC-300M with its masked-language-model head (`Biohub/ESMC-300M`)."""
+    return cast(ESMCForMaskedLM, load("esmc_300m_mlm", **options))
+
+
+def esmc_600m_mlm(**options: Unpack[LoadOptions]) -> ESMCForMaskedLM:
+    """ESMC-600M with its masked-language-model head (`Biohub/ESMC-600M`)."""
+    return cast(ESMCForMaskedLM, load("esmc_600m_mlm", **options))
+
+
+def esmc_6b_mlm(**options: Unpack[LoadOptions]) -> ESMCForMaskedLM:
+    """ESMC-6B with its masked-language-model head (`Biohub/ESMC-6B`); its backbone is
+    `esmc_6b`, stored once."""
+    return cast(ESMCForMaskedLM, load("esmc_6b_mlm", **options))
 
 
 def atlasfold(**options: Unpack[LoadOptions]) -> StructureModel:

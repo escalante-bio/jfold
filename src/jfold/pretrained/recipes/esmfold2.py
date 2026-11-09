@@ -58,6 +58,15 @@ ESMC_SOURCES: dict[str, str] = {
     "esmc_300m": "esmfold2_experimental_fast_base300m",
     "esmc_600m": "esmfold2_experimental_fast_base600m",
 }
+# ESMC with its masked-language-model head, from Biohub's ESMC repositories: name ->
+# (repository, the ESMC release it shares, if any). ESMC-6B's backbone is exactly
+# `esmc_6b`, so only its head is stored; the 300M and 600M copies keep their own float32
+# backbones (`esmc_300m` and `esmc_600m` are those rounded to bfloat16).
+MASKED_LM: dict[str, tuple[str, str | None]] = {
+    "esmc_300m_mlm": ("Biohub/ESMC-300M", None),
+    "esmc_600m_mlm": ("Biohub/ESMC-600M", None),
+    "esmc_6b_mlm": ("Biohub/ESMC-6B", "esmc_6b"),
+}
 
 
 def snapshot(name: str, cache_dir: str | Path | None = None) -> Path:
@@ -124,6 +133,34 @@ def _convert_esmc(m) -> eqx.Module:
         return convert.esmc(m.esmc.float())
 
 
+def _build_masked_lm(checkpoint: Path):
+    """`EsmcForMaskedLM`, on the CPU in float32."""
+    import torch
+    from esm.models.esmc import EsmcForMaskedLM
+
+    return EsmcForMaskedLM.from_pretrained(
+        str(checkpoint), device="cpu", dtype=torch.float32
+    ).eval()
+
+
+def _convert_masked_lm(m) -> eqx.Module:
+    import jax
+
+    from jfold.convert import esmfold2 as convert
+
+    with jax.default_device(jax.devices("cpu")[0]):
+        return convert.esmc_for_masked_lm(m)
+
+
+def _detach_masked_lm_esmc(model: eqx.Module) -> eqx.Module:
+    """A masked-LM ESMC without its backbone, which another release stores."""
+    return eqx.tree_at(lambda m: m.esmc, model, None, is_leaf=lambda x: x is None)
+
+
+def _attach_masked_lm_esmc(esmc_name: str, model: eqx.Module, load) -> eqx.Module:
+    return eqx.tree_at(lambda m: m.esmc, model, load(esmc_name), is_leaf=lambda x: x is None)
+
+
 def _detach_esmc(model: eqx.Module) -> eqx.Module:
     """`model` without its ESMC, as its copy is stored."""
     return eqx.tree_at(lambda m: m.trunk_init.esmc, model, None, is_leaf=lambda x: x is None)
@@ -182,4 +219,17 @@ RELEASES = {
         license=LICENSE,
     )
     for esmc, fold in ESMC_SOURCES.items()
+} | {
+    name: Release(
+        upstream="esm",
+        source=f"https://huggingface.co/{repo}",
+        filename=repo.split("/")[1],
+        fetch=partial(_fetch, repo),
+        build=_build_masked_lm,
+        convert=_convert_masked_lm,
+        assemble=None if shared is None else partial(_attach_masked_lm_esmc, shared),
+        detach=None if shared is None else _detach_masked_lm_esmc,
+        license=LICENSE,
+    )
+    for name, (repo, shared) in MASKED_LM.items()
 }
