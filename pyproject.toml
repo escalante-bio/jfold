@@ -3,6 +3,8 @@ name = "jfold"
 version = "0.1.0"
 description = "Shared JAX building blocks for AF3-family structure prediction models, with converters from the upstream PyTorch implementations."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = "==3.12.*"
 dependencies = [
     "equinox>=0.13.0",

@@ -136,3 +136,8 @@ Also in the repository: [`docs/models/`](docs/models/README.md) (each model's pa
 Every model above converts whole and matches its released checkpoints (the four
 ESMFold2-Experimental checkpoints too), with each upstream's sampler settings. Not ported:
 training heads.
+
+## License
+
+The code is MIT-licensed ([LICENSE](LICENSE)). The converted weights keep their upstream
+licences, noted beside each copy on the hub.
