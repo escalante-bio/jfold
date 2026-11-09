@@ -117,7 +117,7 @@ def test_moved_classes_load_from_their_old_names(tmp_path):
     _edit(tmp_path, lambda s: s["model"]["dict"]["sampling"].update(module=old))
     assert isinstance(io.load(tmp_path)["sampling"], UpstreamSampler)
     for name in io.MOVED.values():
-        io._resolve(name)  # every new name exists
+        io._resolve(name, io._NAMESPACES)  # every new name exists
 
 
 def test_refuses_foreign_names_and_other_versions(tmp_path):
@@ -164,3 +164,20 @@ def test_provenance(tmp_path):
     (tmp_path / "shards" / "a").rename(tmp_path / "shards" / "b")
     second = io.provenance("m", checkpoint=tmp_path / "shards", source="s", upstream="boltz")
     assert first["checkpoint"]["sha256"] != second["checkpoint"]["sha256"]
+
+
+def test_other_namespaces_only_when_named(tmp_path):
+    """A model naming functions (or classes) outside jfold and equinox saves and loads only
+    when the caller names their module prefix."""
+    import textwrap  # a module outside the defaults
+
+    from jfold.nn import Linear
+
+    model = {"layer": Linear(weight=jnp.ones((2, 3))), "fn": textwrap.dedent}
+    with pytest.raises(TypeError, match="module-level name"):
+        io.save(model, tmp_path)
+    io.save(model, tmp_path, namespaces=("textwrap",))
+    with pytest.raises(ValueError, match="refusing"):
+        io.load(tmp_path)
+    loaded = io.load(tmp_path, namespaces=("textwrap",))
+    assert loaded["fn"] is textwrap.dedent

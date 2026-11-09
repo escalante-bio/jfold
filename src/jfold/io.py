@@ -15,7 +15,8 @@ Loading rebuilds the modules from the JSON and fills in the arrays by path. Noth
 on disk is a JAX or pickled Python object, so it does not depend on JAX's internal
 types; it depends only on jfold's class and field names, and a mismatch is reported
 by name. A class that moves or is renamed keeps loading from older files through
-`MOVED`.
+`MOVED`. Loading imports classes and functions from jfold and equinox only, unless the
+caller names more module prefixes (`namespaces`, e.g. another library's own modules).
 """
 
 import dataclasses
@@ -35,7 +36,7 @@ from safetensors.numpy import load_file, save_file
 
 FORMAT_VERSION = 1
 _STRUCTURE, _WEIGHTS = "model.json", "weights.safetensors"
-# Classes and functions a file may name: loading imports nothing else.
+# Classes and functions a file may name, besides a caller's own `namespaces`.
 _NAMESPACES = ("jfold.", "equinox.")
 # Names older files use -> where those classes are now. Saving always writes the current
 # name; add an entry here when moving or renaming a class that saved models use.
@@ -48,16 +49,23 @@ MOVED = {
 }
 
 
-def save(model: eqx.Module, path: str | Path, *, metadata: dict | None = None) -> None:
+def save(
+    model: eqx.Module,
+    path: str | Path,
+    *,
+    metadata: dict | None = None,
+    namespaces: tuple[str, ...] = (),
+) -> None:
     """Write `model` to the directory `path` (created if needed). `metadata` must be
-    JSON-serialisable."""
+    JSON-serialisable. `namespaces`: module prefixes beyond jfold and equinox whose classes
+    and functions the model may use (e.g. `("mosaic.",)`); loading needs the same."""
     path = Path(path)
     arrays: dict[str, np.ndarray] = {}
     structure = {
         "format_version": FORMAT_VERSION,
         "jfold_version": _jfold_version(),
         "metadata": metadata or {},
-        "model": _encode(model, "", arrays),
+        "model": _encode(model, "", arrays, _NAMESPACES + tuple(namespaces)),
     }
     path.mkdir(parents=True, exist_ok=True)
     save_file(arrays, str(path / _WEIGHTS))
@@ -103,11 +111,15 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def load(path: str | Path) -> eqx.Module:
+def load(path: str | Path, *, namespaces: tuple[str, ...] = ()) -> eqx.Module:
     """The model saved at `path`, its arrays on JAX's default device. The arrays are read
     on the host and moved in one `device_put` (array-by-array transfers of a very large
-    model fragment the device's memory pool)."""
-    model = _decode(read_structure(path)["model"], load_file(str(Path(path) / _WEIGHTS)))
+    model fragment the device's memory pool). `namespaces`: module prefixes beyond jfold and
+    equinox it may import classes and functions from, as given to `save`."""
+    allowed = _NAMESPACES + tuple(namespaces)
+    model = _decode(
+        read_structure(path)["model"], load_file(str(Path(path) / _WEIGHTS)), allowed
+    )
     arrays, rest = eqx.partition(model, lambda x: isinstance(x, np.ndarray))
     return eqx.combine(jax.device_put(arrays), rest)  # plain values stay Python values
 
@@ -130,7 +142,7 @@ def _jfold_version() -> str | None:
         return None
 
 
-def _name(obj) -> str:
+def _name(obj, allowed: tuple[str, ...]) -> str:
     """`module:qualname`, preferring equinox's public modules to its private ones."""
     module = obj.__module__
     if module.startswith("equinox"):
@@ -139,16 +151,16 @@ def _name(obj) -> str:
                 module = public
                 break
     name = f"{module}:{obj.__qualname__}"
-    if not module.startswith(_NAMESPACES) or "<" in obj.__qualname__:
-        raise TypeError(f"cannot save {name}: not a module-level jfold or equinox name")
+    if not module.startswith(allowed) or "<" in obj.__qualname__:
+        raise TypeError(f"cannot save {name}: not a module-level name under {allowed}")
     return name
 
 
-def _resolve(name: str):
+def _resolve(name: str, allowed: tuple[str, ...]):
     name = MOVED.get(name, name)
     module, _, qualname = name.partition(":")
-    if not module.startswith(_NAMESPACES):
-        raise ValueError(f"refusing to load {name}: outside {_NAMESPACES}")
+    if not module.startswith(allowed):
+        raise ValueError(f"refusing to load {name}: outside {allowed}")
     obj = importlib.import_module(module)
     for part in qualname.split("."):
         obj = getattr(obj, part, None)
@@ -157,7 +169,7 @@ def _resolve(name: str):
     return obj
 
 
-def _encode(x: Any, path: str, arrays: dict[str, np.ndarray]) -> Any:
+def _encode(x: Any, path: str, arrays: dict[str, np.ndarray], allowed: tuple[str, ...]) -> Any:
     child = lambda key: f"{path}.{key}" if path else str(key)
     match x:
         case jax.Array() | np.ndarray():
@@ -167,26 +179,26 @@ def _encode(x: Any, path: str, arrays: dict[str, np.ndarray]) -> Any:
             return {"array": path, "shape": list(x.shape), "dtype": str(x.dtype)}
         case eqx.Module():
             fields = {
-                f.name: _encode(getattr(x, f.name), child(f.name), arrays)
+                f.name: _encode(getattr(x, f.name), child(f.name), arrays, allowed)
                 for f in dataclasses.fields(x)
             }
-            return {"module": _name(type(x)), "fields": fields}
+            return {"module": _name(type(x), allowed), "fields": fields}
         case None | bool() | int() | float() | str():
             return x
         case np.generic():
             return x.item()
         case tuple():
-            return {"tuple": [_encode(v, child(i), arrays) for i, v in enumerate(x)]}
+            return {"tuple": [_encode(v, child(i), arrays, allowed) for i, v in enumerate(x)]}
         case list():
-            return {"list": [_encode(v, child(i), arrays) for i, v in enumerate(x)]}
+            return {"list": [_encode(v, child(i), arrays, allowed) for i, v in enumerate(x)]}
         case dict() if all(isinstance(k, str) for k in x):
-            return {"dict": {k: _encode(v, child(k), arrays) for k, v in x.items()}}
+            return {"dict": {k: _encode(v, child(k), arrays, allowed) for k, v in x.items()}}
         case types.FunctionType():
-            return {"function": _name(x)}
+            return {"function": _name(x, allowed)}
     raise TypeError(f"{path}: cannot save a {type(x).__name__}")
 
 
-def _decode(node: Any, arrays: dict[str, np.ndarray]) -> Any:
+def _decode(node: Any, arrays: dict[str, np.ndarray], allowed: tuple[str, ...]) -> Any:
     match node:
         case {"array": path, "shape": shape, "dtype": dtype}:
             value = arrays[path]
@@ -194,7 +206,7 @@ def _decode(node: Any, arrays: dict[str, np.ndarray]) -> Any:
                 raise ValueError(f"{path}: weights do not match the structure")
             return value
         case {"module": name, "fields": fields}:
-            cls = _resolve(name)
+            cls = _resolve(name, allowed)
             names = [f.name for f in dataclasses.fields(cls)]
             missing, extra = set(names) - set(fields), set(fields) - set(names)
             if missing or extra:
@@ -204,16 +216,16 @@ def _decode(node: Any, arrays: dict[str, np.ndarray]) -> Any:
             # As equinox rebuilds a module when unflattening: no __init__, fields as stored.
             module = object.__new__(cls)
             for field in names:
-                object.__setattr__(module, field, _decode(fields[field], arrays))
+                object.__setattr__(module, field, _decode(fields[field], arrays, allowed))
             return module
         case {"tuple": items}:
-            return tuple(_decode(v, arrays) for v in items)
+            return tuple(_decode(v, arrays, allowed) for v in items)
         case {"list": items}:
-            return [_decode(v, arrays) for v in items]
+            return [_decode(v, arrays, allowed) for v in items]
         case {"dict": items}:
-            return {k: _decode(v, arrays) for k, v in items.items()}
+            return {k: _decode(v, arrays, allowed) for k, v in items.items()}
         case {"function": name}:
-            return _resolve(name)
+            return _resolve(name, allowed)
         case dict():
             raise ValueError(f"unrecognised node {sorted(node)}")
         case _:
