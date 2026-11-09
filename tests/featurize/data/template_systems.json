@@ -1,0 +1,121 @@
+{
+ "monomer_template": {
+  "chains": [
+   {
+    "id": "A",
+    "sequence": "MKTAYIAKQRQISFVKSHFSRQ",
+    "template": {
+     "pdb": "template_full.pdb"
+    }
+   }
+  ]
+ },
+ "dimer_template": {
+  "chains": [
+   {
+    "id": "A",
+    "sequence": "MKTAYIAKQRQISFVKSHFSRQ"
+   },
+   {
+    "id": "B",
+    "sequence": "GSHMLEDPV",
+    "template": {
+     "pdb": "template_truncated.pdb"
+    }
+   }
+  ]
+ },
+ "monomer_template_gap": {
+  "chains": [
+   {
+    "id": "A",
+    "sequence": "MKTAYIAKQRQISFVKSHFSRQ",
+    "template": {
+     "pdb": "template_gap.pdb"
+    }
+   }
+  ]
+ },
+ "monomer_template_unresolved": {
+  "chains": [
+   {
+    "id": "A",
+    "sequence": "MKTAYIAKQRQISFVKSHFSRQ",
+    "msa": "chain_A.a3m",
+    "template": {
+     "pdb": "template_unresolved.pdb",
+     "sequence": "MKTAXIAKQRQISFVKSHFSRQ"
+    }
+   }
+  ]
+ },
+ "homodimer_template": {
+  "chains": [
+   {
+    "id": "A",
+    "sequence": "MKTAYIAKQRQISFVKSHFSRQ"
+   },
+   {
+    "id": "B",
+    "sequence": "MKTAYIAKQRQISFVKSHFSRQ",
+    "template": {
+     "pdb": "template_full.pdb"
+    }
+   }
+  ]
+ },
+ "dimer_template_both": {
+  "chains": [
+   {
+    "id": "A",
+    "sequence": "MKTAYIAKQRQISFVKSHFSRQ",
+    "template": {
+     "pdb": "template_full.pdb"
+    }
+   },
+   {
+    "id": "B",
+    "sequence": "GSHMLEDPV",
+    "template": {
+     "pdb": "template_short.pdb"
+    }
+   }
+  ]
+ },
+ "dimer_template_tetra": {
+  "chains": [
+   {
+    "id": "A",
+    "sequence": "MKTAYIAKQRQISFVKSHFSRQ",
+    "template": {
+     "pdb": "template_full.pdb"
+    }
+   },
+   {
+    "id": "B",
+    "sequence": "GSHM",
+    "template": {
+     "pdb": "template_tetra.pdb"
+    }
+   }
+  ]
+ },
+ "dimer_template_covering": {
+  "chains": [
+   {
+    "id": "A",
+    "sequence": "KTAYIAKQRQISFVKSHF",
+    "template": {
+     "pdb": "template_full.pdb"
+    }
+   },
+   {
+    "id": "B",
+    "sequence": "SHMLEDP",
+    "template": {
+     "pdb": "template_truncated.pdb"
+    }
+   }
+  ]
+ }
+}

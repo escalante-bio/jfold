@@ -1,0 +1,5 @@
+{
+  "monomer": {"chains": [{"id": "A", "sequence": "MKTAYIAKQRQISFVKSHFSRQ"}]},
+  "dimer": {"chains": [{"id": "A", "sequence": "MKTAYIAKQRQISFVKSHFSRQ"}, {"id": "B", "sequence": "GSHMLEDPV"}]},
+  "monomer_msa": {"chains": [{"id": "A", "sequence": "MKTAYIAKQRQISFVKSHFSRQ", "msa": "chain_A.a3m"}]}
+}

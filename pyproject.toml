@@ -1,0 +1,133 @@
+[project]
+name = "jfold"
+version = "0.1.0"
+description = "Shared JAX building blocks for AF3-family structure prediction models, with converters from the upstream PyTorch implementations."
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "equinox>=0.13.0",
+    "huggingface-hub>=0.36.2",
+    "jax>=0.11.1",
+    "jaxtyping>=0.3.0",
+    "kalign-python>=3.6.0",
+    "numpy>=2.0",
+    "safetensors>=0.8.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "ruff>=0.15.12",
+]
+# Upstream PyTorch implementations, for conversion and parity tests. CUDA torch: ProMERA
+# runs its triangle updates only through cuequivariance's CUDA kernels.
+reference = [
+    "torch==2.11.0",
+    "boltz",
+    "protenix",
+    "opendde",
+    "jopenfold3",
+    "molence",
+    "promera",
+    "esm",
+    "esmjfold2",
+    "biojemu2[reference]",
+    "atlasfold[fold]",
+]
+jax-cuda = [
+    "jax[cuda12]",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+# `reference` (torch and the upstream packages) only for conversion and parity tests:
+# `uv sync --group reference`.
+default-groups = ["dev"]
+required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# Several references pin torch to the CPU index in their own uv config; ProMERA needs CUDA.
+override-dependencies = [
+    "torch @ https://download.pytorch.org/whl/cu128/torch-2.11.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl",
+    # The torchvision built for that torch (PyPI's latest needs a newer torch).
+    "torchvision @ https://download.pytorch.org/whl/cu128/torchvision-0.26.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl",
+]
+
+[tool.uv.sources]
+boltz = { git = "https://github.com/escalante-bio/boltz.git" }
+protenix = { git = "https://github.com/escalante-bio/protenij" }
+opendde = { git = "https://github.com/escalante-bio/jopendde.git", subdirectory = "OpenDDE" }
+jopenfold3 = { git = "https://github.com/escalante-bio/jopenfold3.git" }
+# Fork relaxing pins that conflict with boltz and protenix.
+molence = { git = "https://github.com/escalante-bio/Mol-1" }
+promera = { git = "https://github.com/bjing2016/promera.git" }
+esmjfold2 = { git = "https://github.com/escalante-bio/esmjfold2.git" }
+biojemu2 = { git = "https://github.com/nboyd/biojemu2" }
+bioemu2 = { git = "https://github.com/microsoft/bioemu2", rev = "06be369dd555849165a737472d42d936959e46fc" }
+atlasfold = { git = "https://github.com/SeonghwanSeo/atlasfold.git", rev = "6df9f458b6faee4c697af1dca26626b2f6edb34e" }
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+ignore = ["F722"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The shared helpers (`reference.py`) import from every test directory.
+pythonpath = ["tests"]
+markers = ["checkpoint: end-to-end parity with released weights (downloads them)"]
+addopts = "-m 'not checkpoint'"
+
+# promera pins its whole training stack (torch 2.9, rdkit, wandb, ...), which conflicts with
+# the other references; declare only what its model modules import.
+[[tool.uv.dependency-metadata]]
+name = "promera"
+version = "0.1.0"
+requires-dist = [
+    "torch",
+    "einops",
+    "numpy",
+    "scipy",
+    "fairscale",
+    "lightning",
+    "omegaconf",
+    "cuequivariance-torch==0.8.0",
+    "cuequivariance==0.8.0",
+    "cuequivariance-ops-torch-cu12==0.8.0",
+    "tinyprot @ git+https://github.com/bjing2016/tinyprot.git",
+]
+
+# esm pins cuequivariance>=0.8.1 (CUDA kernels it uses only when present), which conflicts
+# with promera's 0.8.0; declare its dependencies without them.
+[[tool.uv.dependency-metadata]]
+name = "esm"
+version = "3.4.1.post1"
+requires-dist = [
+    "torch>=2.11.0,<2.12.0",
+    "transformers>=4.57.6,<5.0.0",
+    "ipython",
+    "einops",
+    "biotite>=1.0.0",
+    "rdkit",
+    "msgpack-numpy",
+    "biopython",
+    "scikit-learn",
+    "brotli",
+    "attrs",
+    "pandas",
+    "cloudpathlib",
+    "httpx",
+    "tenacity",
+    "zstd",
+    "ipywidgets",
+    "py3dmol",
+    "pydssp",
+    "boto3",
+    "huggingface_hub",
+    "safetensors",
+    "pygtrie",
+    "dna_features_viewer",
+    "accelerate",
+]

@@ -1,0 +1,12 @@
+>query
+MKTAYIAKQRQISFVKSHFSRQ
+>hit1
+MKTAYIAKQRQISFVKSHFSRQ
+>hit2 with insertions (lowercase) and gaps
+MKSAYIAKqqQRQLSFV--HFSRQ
+>hit3
+MRTAFIAKERQISFVKShhHFSKQ
+>hit4 gaps at the ends
+--TAYIAKQRQISFVKSHF---
+>hit5 unknown residue X
+MKTAYIXKQRQISFVKSHFSRE
