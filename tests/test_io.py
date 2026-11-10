@@ -109,6 +109,22 @@ def test_mismatches_are_named(tmp_path):
         io.load(tmp_path)
 
 
+def test_missing_fields_take_their_defaults(tmp_path):
+    """A file without a field that has a default loads with the default; a missing field
+    without one is still a mismatch."""
+    io.save(_holder(), tmp_path)
+    layer = lambda s: s["model"]["dict"]["stack"]["fields"]["layers"]["fields"]
+    _edit(tmp_path, lambda s: layer(s)["tri_att_start"]["fields"].pop("chunk_size"))
+    _edit(tmp_path, lambda s: layer(s).pop("dropout_column"))  # a `default_factory`
+    layers = io.load(tmp_path)["stack"].layers
+    assert layers.tri_att_start.chunk_size is None
+    assert isinstance(layers.dropout_column, eqx.nn.Identity)
+
+    _edit(tmp_path, lambda s: layer(s)["tri_att_start"]["fields"].pop("attention"))
+    with pytest.raises(ValueError, match=r"missing \['attention'\], unknown \[\]"):
+        io.load(tmp_path)
+
+
 def test_moved_classes_load_from_their_old_names(tmp_path):
     """A file naming a class where it used to live loads it from where it is now."""
     io.save(_holder(), tmp_path)

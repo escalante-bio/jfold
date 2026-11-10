@@ -12,8 +12,9 @@ A saved model is a directory of two files:
   name (`jfold.sampling.core:masked_centering`), and each array's shape and dtype.
 
 Loading rebuilds the modules from the JSON and fills in the arrays by path. A file
-depends only on jfold's class and field names (a mismatch is reported by name), and a
-class that moves or is renamed keeps loading from older files through `MOVED`. Loading
+depends only on jfold's class and field names (a mismatch is reported by name; a field
+the file lacks takes its default, if it has one), and a class that moves or is renamed
+keeps loading from older files through `MOVED`. Loading
 imports classes and functions from jfold and equinox only, unless the caller names more
 module prefixes (`namespaces`, e.g. another library's own modules).
 """
@@ -197,6 +198,11 @@ def _encode(x: Any, path: str, arrays: dict[str, np.ndarray], allowed: tuple[str
     raise TypeError(f"{path}: cannot save a {type(x).__name__}")
 
 
+def _has_default(field: dataclasses.Field) -> bool:
+    missing = dataclasses.MISSING
+    return field.default is not missing or field.default_factory is not missing
+
+
 def _decode(node: Any, arrays: dict[str, np.ndarray], allowed: tuple[str, ...]) -> Any:
     match node:
         case {"array": path, "shape": shape, "dtype": dtype}:
@@ -206,16 +212,24 @@ def _decode(node: Any, arrays: dict[str, np.ndarray], allowed: tuple[str, ...]) 
             return value
         case {"module": name, "fields": fields}:
             cls = _resolve(name, allowed)
-            names = [f.name for f in dataclasses.fields(cls)]
-            missing, extra = set(names) - set(fields), set(fields) - set(names)
+            by_name = {f.name: f for f in dataclasses.fields(cls)}
+            missing = {n for n, f in by_name.items() if n not in fields and not _has_default(f)}
+            extra = set(fields) - set(by_name)
             if missing or extra:
                 raise ValueError(
                     f"{name}: fields changed (missing {sorted(missing)}, unknown {sorted(extra)})"
                 )
-            # As equinox rebuilds a module when unflattening: no __init__, fields as stored.
+            # As equinox rebuilds a module when unflattening: no __init__, fields as stored
+            # (its default for a field the file lacks).
             module = object.__new__(cls)
-            for field in names:
-                object.__setattr__(module, field, _decode(fields[field], arrays, allowed))
+            for field, f in by_name.items():
+                if field in fields:
+                    value = _decode(fields[field], arrays, allowed)
+                elif f.default is not dataclasses.MISSING:
+                    value = f.default
+                else:
+                    value = f.default_factory()
+                object.__setattr__(module, field, value)
             return module
         case {"tuple": items}:
             return tuple(_decode(v, arrays, allowed) for v in items)

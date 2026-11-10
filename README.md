@@ -83,6 +83,10 @@ is model-agnostic.
 - Dropout follows each upstream's rates and is off by default
   (`eqx.nn.inference_mode(model, False)` turns it on), except ESMFold2's on its language
   model's pair, which upstream applies at inference. Call models through `eqx.filter_jit`.
+- `jfold.blocks.pairformer.with_triangle_chunks(model, chunk_size)` runs every triangle
+  attention `chunk_size` rows at a time: slower, with attention maps of `chunk_size` rows
+  instead of all of them. It bounds memory under `grad` too, since each block of rows is
+  rematerialized on the backward pass.
 - Language models are stored once and attached on loading: ESMFold2's ESMC
   (`trunk_init.esmc`) and AtlasFold's AtlasLM (`trunk.atlaslm`).
 
@@ -113,7 +117,8 @@ is model-agnostic.
 path in the model) and `model.json` (the model's classes, fields and array shapes, plus
 metadata; `jfold.io.provenance` builds the standard fields). `jfold.io.load(path)` rebuilds
 the model. Nothing is pickled, so files depend only on jfold's class and field names;
-`jfold.io.MOVED` keeps renamed classes loading. `jfold.pretrained.save` and `upload` write and
+`jfold.io.MOVED` keeps renamed classes loading, and a field added with a default loads from
+files without it. `jfold.pretrained.save` and `upload` write and
 publish a release's copy, without the language model it shares with other releases.
 
 ## Tests

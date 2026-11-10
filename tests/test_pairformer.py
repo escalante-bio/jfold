@@ -8,6 +8,7 @@ import pytest
 import torch
 from reference import assert_finite, mask, pad, randomize, rel_err
 
+from jfold.blocks.pairformer import TriangleAttention, with_triangle_chunks
 from jfold.convert import boltz, openfold3, protenix
 
 NUM_TOKENS = 7
@@ -174,3 +175,59 @@ def test_pairformer_matches_reference(case, padding):
     assert rel_err(s_out[:NUM_TOKENS], s_ref[0]) < 1e-5
     assert rel_err(z_out[:NUM_TOKENS, :NUM_TOKENS], z_ref[0]) < 1e-5
     assert_finite((s_out, z_out, _input_grads(model, s_in, z_in, token_mask, NUM_TOKENS)))
+
+
+def _chunk_inputs(padding=3):
+    model = protenix.pairformer_stack(randomize(_protenix()[0], seed=0))
+    num_tokens = NUM_TOKENS + padding
+    s = jax.random.normal(jax.random.key(1), (num_tokens, C_S))
+    z = jax.random.normal(jax.random.key(2), (num_tokens, num_tokens, C_Z))
+    return model, s, z, mask(NUM_TOKENS, padding)
+
+
+@pytest.mark.parametrize("chunk_size", [1, 4, 16])
+def test_triangle_chunks_match_unchunked(chunk_size):
+    """Rows in blocks (one at a time, a size that does not divide the token count, more
+    than there are) give the outputs and pair gradients of all rows at once, with padding."""
+    model, s, z, token_mask = _chunk_inputs()
+    chunked = with_triangle_chunks(model, chunk_size)
+    s_ref, z_ref = _forward(model, s, z, token_mask)
+    s_out, z_out = _forward(chunked, s, z, token_mask)
+    assert rel_err(s_out, s_ref) < 1e-5
+    assert rel_err(z_out, z_ref) < 1e-5
+    grad_ref = _input_grads(model, s, z, token_mask, NUM_TOKENS)[1]
+    grad = _input_grads(chunked, s, z, token_mask, NUM_TOKENS)[1]
+    assert rel_err(grad, grad_ref) < 1e-5
+
+
+@eqx.filter_jit
+def _forward_many(model, s, zs, mask):
+    return jax.vmap(lambda z: model(s, z, mask)[1])(zs)
+
+
+def test_triangle_chunks_under_vmap():
+    """A chunked stack mapped over several pairs, as the template embedder maps its own."""
+    model, s, z, token_mask = _chunk_inputs()
+    zs = jax.numpy.stack([z, z.swapaxes(0, 1), 2 * z])
+    out = _forward_many(with_triangle_chunks(model, 4), s, zs, token_mask)
+    assert rel_err(out, _forward_many(model, s, zs, token_mask)) < 1e-5
+
+
+def _chunk_sizes(tree):
+    is_attention = lambda x: isinstance(x, TriangleAttention)
+    return [x.chunk_size for x in jax.tree.leaves(tree, is_leaf=is_attention) if is_attention(x)]
+
+
+def test_with_triangle_chunks_sets_every_triangle_attention():
+    """Every `TriangleAttention` in a nested structure gets the chunk size and nothing
+    else changes; None restores the original."""
+    stack = protenix.pairformer_stack(randomize(_protenix()[0], seed=0))
+    mol1 = protenix.mol1_pairformer(randomize(_mol1()[0], seed=0))
+    model = {"trunk": (stack, mol1), "other": [stack.layers.tri_att_end, None, 3]}
+    num = len(_chunk_sizes(model))
+    assert num >= 5 and _chunk_sizes(model) == [None] * num
+    chunked = with_triangle_chunks(model, 4)
+    assert _chunk_sizes(chunked) == [4] * num
+    assert eqx.tree_equal(jax.tree.leaves(chunked), jax.tree.leaves(model))
+    assert not eqx.tree_equal(chunked, model)
+    assert eqx.tree_equal(with_triangle_chunks(chunked, None), model)

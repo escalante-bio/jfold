@@ -5,6 +5,7 @@ False for padding. Padded tokens never affect real ones; their own outputs are u
 but finite."""
 
 import abc
+import dataclasses
 
 import equinox as eqx
 import jax
@@ -52,18 +53,56 @@ class TriangleMultiplication(eqx.Module):
 class TriangleAttention(eqx.Module):
     """Triangle attention around the starting node (AF3 Algorithm 14): each row attends
     along itself, biased by the pair. Applied to the transposed pair it is the
-    ending-node version (Algorithm 15)."""
+    ending-node version (Algorithm 15).
+
+    With `chunk_size` the rows run in blocks of that many, one block at a time, so the
+    attention maps are `[chunk_size, heads, T, T]` instead of `[T, heads, T, T]`. Each
+    block is rematerialized on the backward pass."""
 
     norm: LayerNorm
     linear_bias: Linear  # Cz -> heads
     attention: Attention
+    chunk_size: int | None = eqx.field(default=None, static=True)
 
     def __call__(
         self, z: Float[Array, "T T Cz"], pair_mask: Bool[Array, "T T"]
     ) -> Float[Array, "T T Cz"]:
         z = self.norm(z)
         bias = jnp.moveaxis(self.linear_bias(z), -1, 0)  # [heads, T, T], shared by rows
-        return jax.vmap(lambda row, m: self.attention(row, row, bias, m))(z, pair_mask)
+        if self.chunk_size is None:
+            return jax.vmap(lambda row, m: self.attention(row, row, bias, m))(z, pair_mask)
+        num_rows = z.shape[0]
+        size = min(self.chunk_size, num_rows)
+        padding = -num_rows % size  # rows of zeros that attend to nothing, then dropped
+        blocks = lambda x: jnp.pad(x, [(0, padding)] + [(0, 0)] * (x.ndim - 1)).reshape(
+            -1, size, *x.shape[1:]
+        )
+        out = jax.lax.map(
+            lambda block: _attend_rows(self.attention, bias, *block),
+            (blocks(z), blocks(pair_mask)),
+        )
+        return out.reshape(-1, *out.shape[2:])[:num_rows]
+
+
+@jax.checkpoint
+def _attend_rows(
+    attention: Attention,
+    bias: Float[Array, "heads T T"],
+    rows: Float[Array, "n T Cz"],
+    mask: Bool[Array, "n T"],
+) -> Float[Array, "n T Cz"]:
+    return jax.vmap(lambda row, m: attention(row, row, bias, m))(rows, mask)
+
+
+def with_triangle_chunks[M](model: M, chunk_size: int | None) -> M:
+    """`model` with every `TriangleAttention` in it running `chunk_size` rows at a time
+    (None: all rows at once). Slower, with less memory, also under `grad`."""
+    is_attention = lambda x: isinstance(x, TriangleAttention)
+    return jax.tree.map(
+        lambda x: dataclasses.replace(x, chunk_size=chunk_size) if is_attention(x) else x,
+        model,
+        is_leaf=is_attention,
+    )
 
 
 class AttentionPairBias(eqx.Module):
