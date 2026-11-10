@@ -1,20 +1,19 @@
-"""Whole models: `StructureModel`, the AF3-family composition every jfold model is (the
-input embedding, the trunk, the diffusion module and the heads, each a slot typed by
-`jfold.slots`), with a system's inputs in one `Features` bundle; and the AF3 recycling
-trunk (`Trunk`, AF3 Algorithm 1)."""
+"""`StructureModel`, the composition every jfold model is (its parts are slots typed by
+`jfold.slots`), and the AF3 recycling trunk (`Trunk`)."""
+
+import dataclasses
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, PRNGKeyArray
 
-from jfold.blocks.atoms import Atoms
-from jfold.blocks.confidence import ConfidenceLogits, PairHead
+from jfold.blocks.confidence import PairHead
 from jfold.blocks.msa import AbstractMSAModule
 from jfold.blocks.pairformer import AbstractPairformer
 from jfold.blocks.templates import TemplateEmbedder
 from jfold.nn import LayerNorm, Linear, split_key
-from jfold.sampling import StructureSampler, UpstreamSampler, structure_sampler
+from jfold.sampling import StructureSampler, UpstreamSampler
 from jfold.sampling.schedules import Schedule
 from jfold.slots import (
     AbstractConfidenceModule,
@@ -22,51 +21,11 @@ from jfold.slots import (
     AbstractInputEmbedder,
     AbstractTrunk,
     AbstractTrunkInit,
+    ConfidenceLogits,
+    Features,
+    TrunkInputs,
+    TrunkState,
 )
-
-
-class Features(eqx.Module):
-    """A system's inputs, in the model's vocabulary (`jfold.models.*.features` build them).
-    Masks are False for padding."""
-
-    atoms: Atoms
-    token_features: Float[Array, "T F"]
-    relative_positions: Float[Array, "T T R"]  # jfold.blocks.inputs.relative_position_features
-    token_mask: Bool[Array, " T"]
-    asym_id: Int[Array, " T"]
-    rep_atom: Int[Array, " T"]  # each token's representative atom (confidence)
-    atom_position: Int[Array, " N"]  # each atom's index within its token
-    bonds: Float[Array, "T T B"] | None = None
-    # Model-specific extra pair inputs, which the model's trunk init embeds (Boltz-2's
-    # contact features).
-    pair_features: Float[Array, "T T P"] | None = None
-    keep_aggregate: Bool[Array, " T"] | None = None  # see InputEmbedder
-    msa_features: Float[Array, "S T Fm"] | None = None
-    msa_mask: Bool[Array, "S T"] | None = None
-    template_features: Float[Array, "Nt T T Ft"] | None = None
-    template_mask: Bool[Array, " Nt"] | None = None
-    # A model's own inputs, read by its own modules: ESMFold2's language-model input,
-    # OpenDDE's structural tokens, BioEmu2's conditioning.
-    extras: eqx.Module | None = None
-
-
-class TrunkInputs(eqx.Module):
-    """What every trunk pass reads: `s_inputs`, the initial single and pair, and anything
-    else a model computes once per forward pass (`extras`: ESMFold2's language-model pair,
-    embedded relative positions and bonds, and column-masked MSA)."""
-
-    s_inputs: Float[Array, "T Ci"]
-    s_init: Float[Array, "T Cs"]
-    z_init: Float[Array, "T T Cz"]
-    extras: eqx.Module | None = None
-
-
-class TrunkState(eqx.Module):
-    """The trunk's single and pair. A pair-only trunk (ESMFold2's) carries the single it
-    starts from, unchanged."""
-
-    s: Float[Array, "T Cs"]
-    z: Float[Array, "T T Cz"]
 
 
 class Recycle(eqx.Module):
@@ -79,7 +38,7 @@ class Recycle(eqx.Module):
         return init + self.linear(self.norm(previous))
 
 
-class Trunk(AbstractTrunk):
+class Trunk(AbstractTrunk[Features]):
     """AF3 Algorithm 1's recycling loop, starting from zeros; one pass (lines 8-13)
     recycles the previous single and pair, adds templates, runs the MSA module, then the
     Pairformer. Boltz-2 and ProMERA add the MSA module's output to its input
@@ -92,7 +51,6 @@ class Trunk(AbstractTrunk):
     msa: AbstractMSAModule | None = None
 
     def init_state(self, inputs: TrunkInputs, *, key: PRNGKeyArray | None = None) -> TrunkState:
-        del key
         return TrunkState(s=jnp.zeros_like(inputs.s_init), z=jnp.zeros_like(inputs.z_init))
 
     def __call__(
@@ -119,97 +77,61 @@ class Trunk(AbstractTrunk):
         return TrunkState(s=s, z=z)
 
 
-class StructureModel(eqx.Module):
-    """A structure model: each part a slot, filled by the module of that type a model uses
-    (the shared AF3 ones, e.g. `Trunk`, or its own, e.g. ESMFold2's Parcae trunk):
+class StructureModel[F](eqx.Module):
+    """A structure model: each part is a slot, filled by a shared AF3 module (e.g. `Trunk`)
+    or the model's own (e.g. ESMFold2's Parcae trunk), all reading the same features `F`:
 
         inputs, state = model.run_trunk(features, num_passes=4, key=k)
         coords = model.structure_sampler(features, inputs, state).sample(k)
         logits = model.confidence_logits(features, inputs, state, coords, key=k)
 
-    `run_trunk` is `embed`, `init_state`, one `step` per pass and `finish`. They are
-    separate methods for callers that drive the passes themselves (where gradients stop,
-    inputs reused across evaluations). `denoiser_context` and `denoise` split the diffusion
-    module the same way (the context once per trunk, a step per noise level).
+    To drive the trunk passes yourself (where gradients stop, a state carried between
+    calls), call the trunk slot, as `run_trunk` does:
+
+        inputs = model.embed(features, key=k)
+        state = model.trunk.init_state(inputs, key=k)
+        state = model.trunk(features, inputs, state, key=k)  # one pass; repeat at will
+        state = model.trunk.finish(features, state, key=k)  # the state the heads read
+
+    The other parts are called the same way: `model.diffusion.prepare(...)` and
+    `model.diffusion(context, x_noisy, t)` (what a sampler runs), `model.distogram(state.z)`.
 
     Keys feed dropout (off by default) and the trunk's random draws (MSA subsampling,
     ESMFold2's starting state and MSA column mask); where only dropout reads them they may
     be None."""
 
-    input_embedder: AbstractInputEmbedder
-    trunk_init: AbstractTrunkInit
-    trunk: AbstractTrunk
-    diffusion: AbstractDiffusionModule
+    input_embedder: AbstractInputEmbedder[F]
+    trunk_init: AbstractTrunkInit[F]
+    trunk: AbstractTrunk[F]
+    diffusion: AbstractDiffusionModule[F]
     distogram: PairHead
-    confidence: AbstractConfidenceModule | None = None
+    confidence: AbstractConfidenceModule[F] | None = None
     # The upstream sampler's settings (`structure_sampler` uses them).
     sampling: UpstreamSampler | None = None
 
-    def embed(self, features: Features, *, key: PRNGKeyArray | None = None) -> TrunkInputs:
+    def embed(self, features: F, *, key: PRNGKeyArray | None = None) -> TrunkInputs:
         """What every trunk pass reads, computed once."""
-        k_inputs, k_init = split_key(key)
-        s_inputs = self.input_embedder(features, key=k_inputs)
-        return self.trunk_init(features, s_inputs, key=k_init)
+        return self.trunk_init(features, self.input_embedder(features), key=key)
 
-    def init_state(self, inputs: TrunkInputs, *, key: PRNGKeyArray | None = None) -> TrunkState:
-        """The state the first `step` starts from."""
-        return self.trunk.init_state(inputs, key=key)
-
-    def step(
-        self,
-        features: Features,
-        inputs: TrunkInputs,
-        state: TrunkState,
-        *,
-        key: PRNGKeyArray | None = None,
-    ) -> TrunkState:
-        """One trunk pass."""
-        return self.trunk(features, inputs, state, key=key)
-
-    def finish(
-        self, features: Features, state: TrunkState, *, key: PRNGKeyArray | None = None
-    ) -> TrunkState:
-        """The state the heads read, from the last pass's."""
-        return self.trunk.finish(features, state, key=key)
-
-    def run_trunk(self, features: Features, *, num_passes: int, key: PRNGKeyArray):
-        """The whole trunk: `embed`, `init_state`, `num_passes` passes (the first, then
-        recycles: 3 recycles is 4 passes) and `finish`. Returns the trunk inputs and the
-        state the heads read. The passes run under `lax.scan`, so they compile once whatever
-        their number."""
+    def run_trunk(self, features: F, *, num_passes: int, key: PRNGKeyArray):
+        """The whole trunk: `embed`, the trunk's `init_state`, `num_passes` passes (3
+        recycles is 4 passes) and `finish`. Returns the trunk inputs and the state the heads
+        read. The passes run under `lax.scan`, so they compile once."""
         if num_passes < 1:
             raise ValueError(f"num_passes must be at least 1, got {num_passes}")
         k_embed, k_init, k_passes, k_finish = jax.random.split(key, 4)
         inputs = self.embed(features, key=k_embed)
-        state = self.init_state(inputs, key=k_init)
+        state = self.trunk.init_state(inputs, key=k_init)
 
         def one_pass(state, k):
-            return self.step(features, inputs, state, key=k), None
+            return self.trunk(features, inputs, state, key=k), None
 
         state, _ = jax.lax.scan(one_pass, state, jax.random.split(k_passes, num_passes))
-        return inputs, self.finish(features, state, key=k_finish)
-
-    def denoiser_context(
-        self, features: Features, inputs: TrunkInputs, state: TrunkState
-    ) -> eqx.Module:
-        """Everything a denoising step needs that depends only on the trunk (`state` as the
-        heads read it, after `finish`)."""
-        return self.diffusion.prepare(features, inputs, state)
-
-    def denoise(
-        self,
-        context: eqx.Module,
-        x_noisy: Float[Array, "N 3"],
-        t: Float[Array, ""],
-        *,
-        key: PRNGKeyArray | None = None,
-    ) -> Float[Array, "N 3"]:
-        """The denoised positions at noise level `t`."""
-        return self.diffusion(context, x_noisy, t, key=key)
+        return inputs, self.trunk.finish(features, state, key=k_finish)
 
     def structure_sampler(
         self,
-        features: Features,
+        features: F,
         inputs: TrunkInputs,
         state: TrunkState,
         *,
@@ -217,25 +139,21 @@ class StructureModel(eqx.Module):
         schedule: Schedule | None = None,
         **changes,
     ) -> StructureSampler:
-        """A sampler for structures from this trunk output (`state` as the heads read it,
-        after `finish`): the denoiser's context computed once, upstream's settings
-        (`sampling`) for `num_steps` steps on `schedule`, `changes` to any of their fields
-        (e.g. `update=exponential_update`)."""
-        context = self.denoiser_context(features, inputs, state)
-        return structure_sampler(self, context, num_steps=num_steps, schedule=schedule, **changes)
-
-    def distogram_logits(self, state: TrunkState) -> Float[Array, "T T B"]:
-        """Distogram logits from the state the heads read."""
-        return self.distogram(state.z)
-
-    @property
-    def has_confidence(self) -> bool:
-        """Whether `confidence_logits` is available."""
-        return self.confidence is not None
+        """A sampler for structures from this trunk output (`state` after `finish`): the
+        denoiser with its context computed once, and upstream's settings (`sampling`) for
+        `num_steps` steps on `schedule`, with `changes` to any of their fields (e.g.
+        `update=exponential_update`)."""
+        context = self.diffusion.prepare(features, inputs, state)
+        settings = self.sampling.settings(num_steps, schedule=schedule)
+        return StructureSampler(
+            denoise=eqx.Partial(self.diffusion, context),
+            atom_mask=context.atom_mask.astype(jnp.float32),
+            settings=dataclasses.replace(settings, **changes),
+        )
 
     def confidence_logits(
         self,
-        features: Features,
+        features: F,
         inputs: TrunkInputs,
         state: TrunkState,
         coords: Float[Array, "N 3"],

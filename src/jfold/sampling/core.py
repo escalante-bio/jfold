@@ -1,14 +1,10 @@
-"""One AF3-style (Algorithm 18) diffusion sampler for every AF3-class structure module.
+"""One diffusion sampler (AF3 Algorithm 18) for every AF3-class structure module.
 
-A model's structure module enters as a `Denoise` function: an EDM x0-predictor
-`D(x, sigma)` with its weights and conditioning bound (an `eqx.Partial`, so they stay
-pytree leaves). A `SamplerSettings` owns everything
-else -- the noise schedule, churn, centring / random augmentation, rigid
-alignment and the update rule -- and `Noise` holds all randomness, so the per-model differences that
-used to be baked into each model's loop become fields of a `SamplerSettings`.
+A model's structure module enters as a `Denoise` function, `SamplerSettings` holds what
+the models' samplers differ in, and `Noise` holds all randomness.
 
-Everything is written for a single sample (`x: [A, 3]`, Å); use `jax.vmap` over
-keys (or `Noise`) for several.
+Written for a single sample (`x: [A, 3]`, Å); `jax.vmap` over keys (or `Noise`) for
+several.
 """
 
 from collections.abc import Callable
@@ -22,7 +18,8 @@ from jaxtyping import Array, Float, PRNGKeyArray
 Denoise = Callable[[Float[Array, "A 3"], Float[Array, ""]], Float[Array, "A 3"]]
 """EDM x0-predictor for one sample: maps noisy coordinates `x` (Å) at noise level
 `sigma` to the denoised estimate, preconditioning (c_in, c_skip, c_out, c_noise)
-included. Build it as an `eqx.Partial` binding the weights and conditioning."""
+included. Build it as an `eqx.Partial` binding the weights and conditioning, so they stay
+pytree leaves."""
 
 # Frame policies. `SamplerSettings.center` maps `(x, mask) -> x`; `SamplerSettings.align` maps
 # `(x, target, mask) -> x`. They are static fields, so they must be module-level
@@ -34,13 +31,12 @@ def no_centering(x: Float[Array, "A 3"], mask: Float[Array, " A"]) -> Float[Arra
 
 
 def mean_centering(x: Float[Array, "A 3"], mask: Float[Array, " A"]) -> Float[Array, "A 3"]:
-    """Subtract the plain atom mean, padding included (so padding moves the sample;
-    the converters use `masked_centering`, the same without padding)."""
+    """Subtract the atom mean, padding included (so padding moves the sample)."""
     return x - x.mean(0)
 
 
 def masked_centering(x: Float[Array, "A 3"], mask: Float[Array, " A"]) -> Float[Array, "A 3"]:
-    """Subtract the mean over real (masked-in) atoms."""
+    """Subtract the mean over real atoms."""
     w = mask[:, None]
     return x - (x * w).sum(0) / jnp.maximum(w.sum(), 1.0)
 
@@ -108,16 +104,15 @@ class SamplerSettings(eqx.Module):
     raises the noise level to `t_hat = sigma * (1 + gamma)`, with
     `gamma = gamma_0` while `sigma_next > gamma_min` (else 0), adding
     `noise_scale * sqrt(t_hat² - sigma²)` Gaussian noise; then steps to
-    `sigma_next` with `update`: `euler_update` (an Euler step scaled by
-    `step_scale`) or `exponential_update`. `gamma_0=0, noise_scale=1,
-    step_scale=1` with `euler_update` is the plain probability-flow ODE.
+    `sigma_next` with `update`: `euler_update` or `exponential_update`.
+    `gamma_0=0, noise_scale=1, step_scale=1` with `euler_update` is the plain
+    probability-flow ODE.
 
     Frame policy, applied every step:
       - `center`: `no_centering`, `mean_centering` or `masked_centering`.
       - `augment`: apply the step's random rotation and translation.
-      - `augment_after_noise`: centre/augment after the churn noise is added
-        rather than before.
-      - `align`: before the Euler step, move the noisy sample onto the denoised
+      - `augment_after_noise`: centre/augment after the churn noise, not before.
+      - `align`: before the update, move the noisy sample onto the denoised
         one with `rigid_align` or `rigid_align_stop_gradient`, or `no_alignment`.
 
     A converted model's `sampling.settings(...)` (`jfold.sampling.UpstreamSampler`)
@@ -147,7 +142,6 @@ class Noise(eqx.Module):
 
     `init` and `churn` are standard normal (scaled by the sampler), `rotations`
     are Haar-random and applied as `x @ R`, `translations` are standard normal.
-    Passing these in explicitly makes `integrate` a deterministic function.
     """
 
     init: Float[Array, "A 3"]
@@ -186,7 +180,7 @@ def integrate(
     settings: SamplerSettings,
     noise: Noise,
 ) -> Float[Array, "A 3"]:
-    """Run the sampler with `settings` from `noise` using the given draws (deterministic).
+    """Run the sampler with `settings` on the draws in `noise` (deterministic).
 
     `atom_mask` marks real (non-padding) atoms for centring and alignment.
     """

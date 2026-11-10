@@ -3,10 +3,10 @@
 upstream's frame, confidence-mask, molecule-type and bond keys. A chain's template is placed
 residue by residue (`protenix_templates`).
 
-Also the Protenix-lineage code the Mol-1 and OpenDDE views share: the atom layout (CCD
-heavy atoms, `OXT` on each chain's last residue), the reference-conformer encodings and pose,
-the token ids, both MSA conventions (Protenix's, and Mol-1's, which OpenDDE shares) and the
-template pair features.
+Also the code the Mol-1 and OpenDDE views share: the atom layout (CCD heavy atoms, `OXT` on
+each chain's last residue), the reference-conformer encodings and pose, the token ids, both
+MSA conventions (Protenix's, and Mol-1's, which OpenDDE shares) and the template pair
+features.
 
 The only random step upstream is each residue's reference-conformer pose, drawn from numpy's
 global RNG. Here it is drawn from a JAX `key` with the same distribution; without a key the
@@ -608,5 +608,6 @@ def features(system: System, *, key: jax.Array | None = None) -> dict[str, np.nd
 
 
 def atom_sites(system: System) -> AtomSites:
-    """What each real atom of `features(system)` is (chains in input order, `OXT` on each chain's last residue)."""
+    """What each real atom of `features(system)` is (chains in input order, `OXT` on each
+    chain's last residue)."""
     return _atom_sites(system.chains, residues("protenix"), oxt=True)

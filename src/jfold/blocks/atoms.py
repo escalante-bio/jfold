@@ -1,8 +1,8 @@
 """Atom attention encoder and decoder (AF3 Algorithms 5 and 6).
 
-The encoder's work splits by when it runs: `AtomAttentionEncoder.condition` depends only on
-the reference conformer and the trunk, so a sampler runs it once; `__call__` adds the noisy
-positions and runs the atom transformer at every step.
+`AtomAttentionEncoder.condition` depends only on the reference conformer and the trunk, so
+a sampler runs it once; `__call__` adds the noisy positions and runs the atom transformer
+at every step.
 
 Inputs are unbatched: per-atom arrays `[N, ...]`, the atom-to-token index `[N]`, and an atom
 mask `[N]` that is False for padding."""
@@ -11,10 +11,10 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from equinox.nn import Identity
-from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, Float, Int
 
 from jfold.blocks.diffusion import DiffusionTransformer
-from jfold.blocks.windows import CenteredWindows, ShiftedWindows
+from jfold.blocks.windows import Windows
 from jfold.nn import LayerNorm, Linear, ReluMLP
 
 
@@ -55,7 +55,7 @@ class AtomPairEmbedding(eqx.Module):
         ref_pos: Float[Array, "N 3"],
         ref_space_uid: Int[Array, " N"],
         mask: Bool[Array, " N"],
-        windows: CenteredWindows | ShiftedWindows,
+        windows: Windows,
     ) -> Float[Array, "NW queries keys Cp"]:
         index, key_valid = windows.key_index(mask)
         offset = windows.query_blocks(ref_pos)[:, :, None] - ref_pos[index][:, None]
@@ -84,7 +84,7 @@ class TrunkToAtoms(eqx.Module):
         z_trunk: Float[Array, "T T Cz"],
         atom_to_token: Int[Array, " N"],
         mask: Bool[Array, " N"],
-        windows: CenteredWindows | ShiftedWindows,
+        windows: Windows,
     ) -> tuple[Float[Array, "N Ca"], Float[Array, "NW queries keys Cp"]]:
         c = c + self.linear_s(self.norm_s(s_trunk))[atom_to_token]
         index, _ = windows.key_index(mask)
@@ -141,13 +141,11 @@ class AtomAttentionEncoder(eqx.Module):
         mask: Bool[Array, " N"],
         num_tokens: int,
         r: Float[Array, "N 3"] | None = None,
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> tuple[Float[Array, "T Ct"], Float[Array, "N Ca"]]:
         """Per-token aggregates `a`, and the atom queries for the decoder's skip."""
         if self.linear_r is not None:
             q = q + self.linear_r(r)
-        q = self.transformer(q, c, biases, mask, key=key)
+        q = self.transformer(q, c, biases, mask)
         a = jax.nn.relu(self.linear_token(q))
         return mean_atoms_to_tokens(a, atom_to_token, mask, num_tokens), q
 
@@ -169,9 +167,7 @@ class AtomAttentionDecoder(eqx.Module):
         biases: Float[Array, "layers heads NW queries keys"],
         atom_to_token: Int[Array, " N"],
         mask: Bool[Array, " N"],
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> Float[Array, "N 3"]:
         q = q + self.linear_a(a)[atom_to_token]
-        q = self.transformer(q, c, biases, mask, key=key)
+        q = self.transformer(q, c, biases, mask)
         return self.linear_out(self.norm_out(q))

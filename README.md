@@ -23,16 +23,18 @@ from jfold.models import boltz2
 k_pose, k_trunk, k_sample, k_conf = jax.random.split(jax.random.key(0), 4)
 system = System((Chain("A", "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"),))
 features = boltz2.features(view.features(system, key=k_pose))  # `msa=` an a3m string, per chain
-model = pretrained.boltz2()
+model = pretrained.load("boltz2")
 
 inputs, state = model.run_trunk(features, num_passes=4, key=k_trunk)  # 1 + upstream's 3 recycles
 coords = model.structure_sampler(features, inputs, state).sample(k_sample)  # [atoms, 3]
 plddt_logits = model.confidence_logits(features, inputs, state, coords, key=k_conf).plddt
 ```
 
-Every model follows the same steps with its own view, `features` and loader
-(`pretrained.protenix_mini()`, `pretrained.esmfold2_experimental_fast()`, ...;
-`pretrained.load(name)` loads one by name). End-to-end examples:
+Every model follows the same steps with its own view, `features` and name
+(`pretrained.load("protenix_mini")`, `pretrained.load("esmfold2_experimental_fast")`, ...;
+`pretrained.releases()` lists them). To drive the trunk one pass at a time, call its slot:
+`model.embed`, then `model.trunk.init_state`, `model.trunk(features, inputs, state, key=k)`
+per pass, and `model.trunk.finish` for the state the heads read. End-to-end examples:
 
 - [`examples/predict_boltz2.py`](examples/predict_boltz2.py): Boltz-2, optionally with MSAs,
   several samples, the most confident written as PDB.
@@ -91,10 +93,11 @@ is model-agnostic.
 - `jfold.blocks`: the shared building blocks (`pairformer`, `msa`, `templates`,
   `diffusion` and `atoms` for the transformers over tokens and atom windows, `denoiser` for
   the diffusion module, `confidence`, `inputs`).
-- `jfold.model`: `StructureModel` (`run_trunk`, `structure_sampler`, `confidence_logits`,
-  ...), `Features`, and the AF3 recycling `Trunk`.
+- `jfold.model`: `StructureModel` (`embed`, `run_trunk`, `structure_sampler`,
+  `confidence_logits`) and the AF3 recycling `Trunk`.
 - `jfold.slots`: the abstract type of each `StructureModel` part, which model-specific
-  modules subclass; a model's own inputs travel in `Features.extras`.
+  modules subclass, and the values that pass between them (`Features`, `TrunkInputs`,
+  `TrunkState`, `ConfidenceLogits`); a model's own inputs travel in `Features.extras`.
 - `jfold.models`: each model's feature vectors (`features(dict)`) and its own modules.
 - `jfold.featurize`: torch-free featurization, one view per model
   (`views.<model>.features(system)`, `atom_sites(system)` for writing structures).

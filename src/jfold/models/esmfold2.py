@@ -3,14 +3,13 @@ atom encoder and decoder, the outer product mean's count clamp, the confidence h
 row pooling, the ESMC language model and its pair projection, and the Parcae recurrence
 around the pair trunk.
 
-Everything else (the pair trunk, MSA modules, diffusion transformer and conditioning,
-relative positions, confidence heads, the experimental type's recycling) runs on the shared
-blocks. Both model types are a `jfold.model.StructureModel`: the release type's trunk is the
-Parcae recurrence (`ParcaeTrunk`), the experimental type's recycles the pair
-(`RecyclingPairTrunk`). The trunk init holds ESMC, which it runs on the features' sequence
-(`LanguageModelInput`, the features' `extras`) unless they carry precomputed states. The
-trunk is pair-only: its state carries `s_inputs` as the single, unchanged. Inputs are
-unbatched, with masks that are False for padding."""
+The rest (the pair trunk, MSA modules, diffusion transformer and conditioning, relative
+positions, confidence heads, the experimental type's recycling) runs on the shared blocks.
+Both model types are a `jfold.model.StructureModel`: the release type's trunk is
+`ParcaeTrunk`, the experimental type's `RecyclingPairTrunk`. The trunk init holds ESMC,
+which it runs on the features' sequence (`LanguageModelInput`, their `extras`) unless they
+carry precomputed states. The trunk is pair-only: its state carries `s_inputs` as the
+single, unchanged. Inputs are unbatched, with masks that are False for padding."""
 
 import math
 
@@ -24,7 +23,6 @@ from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 from jfold.blocks.atoms import Atoms, mean_atoms_to_tokens
 from jfold.blocks.confidence import (
     AtomHead,
-    ConfidenceLogits,
     DistanceEmbedding,
     PairHead,
     pairwise_distances,
@@ -35,15 +33,28 @@ from jfold.blocks.inputs import probabilities, relative_position_features
 from jfold.blocks.msa import MSAModule, outer_product_sum
 from jfold.blocks.pairformer import PairformerStack
 from jfold.blocks.windows import CenteredWindows
-from jfold.model import Features, Recycle, TrunkInputs, TrunkState
+from jfold.model import Recycle
 from jfold.models.common import arrays
-from jfold.nn import Dropout, LayerNorm, Linear, SinglesToPair, Transition, scan_layers, split_key
+from jfold.nn import (
+    Dropout,
+    LayerNorm,
+    Linear,
+    SinglesToPair,
+    SwiGLU,
+    Transition,
+    scan_layers,
+    split_key,
+)
 from jfold.slots import (
     AbstractConfidenceModule,
     AbstractDiffusionModule,
     AbstractInputEmbedder,
     AbstractTrunk,
     AbstractTrunkInit,
+    ConfidenceLogits,
+    Features,
+    TrunkInputs,
+    TrunkState,
 )
 
 _RMS_EPS = float(jnp.finfo(jnp.float32).eps)  # torch's rms_norm default for float32
@@ -160,17 +171,6 @@ class SlidingWindowAttention(eqx.Module):
         return self.linear_o(out * jax.nn.sigmoid(self.linear_g(x)))
 
 
-class SwiGLU(eqx.Module):
-    """`linear_out(silu(linear_a(x)) * linear_b(x))`."""
-
-    linear_a: Linear
-    linear_b: Linear
-    linear_out: Linear
-
-    def __call__(self, x: Float[Array, "... d"]) -> Float[Array, "... d"]:
-        return self.linear_out(jax.nn.silu(self.linear_a(x)) * self.linear_b(x))
-
-
 class SlidingWindowLayer(eqx.Module):
     """adaLN-Zero block: RMS norms scaled, shifted and gated from the atom single through
     one modulation per layer, around sliding-window attention and a SwiGLU."""
@@ -208,14 +208,12 @@ class SlidingWindowTransformer(eqx.Module):
         modulations: Float[Array, "layers N 6Ca"],
         rope: tuple[Float[Array, "N R"], Float[Array, "N R"]],
         mask: Bool[Array, " N"],
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> Float[Array, "N Ca"]:
-        def step(layer_and_modulation, x, k):
+        def step(layer_and_modulation, x, key):
             layer, modulation = layer_and_modulation
             return layer(x, modulation, rope, mask)
 
-        return scan_layers(step, x, (self.layers, modulations), key=key)
+        return scan_layers(step, x, (self.layers, modulations))
 
 
 class AtomContext(eqx.Module):
@@ -252,14 +250,12 @@ class AtomEncoder(eqx.Module):
         mask: Bool[Array, " N"],
         num_tokens: int,
         r: Float[Array, "N 3"] | None = None,
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> tuple[Float[Array, "T Ct"], Float[Array, "N Ca"]]:
         """Per-token aggregates, and the atom queries for the decoder's skip."""
         q = context.single
         if self.linear_r is not None:
             q = q + self.linear_r(r)
-        q = self.transformer(q, context.modulations, context.rope, mask, key=key)
+        q = self.transformer(q, context.modulations, context.rope, mask)
         a = jax.nn.relu(self.linear_token(q))
         return mean_atoms_to_tokens(a, atom_to_token, mask, num_tokens), q
 
@@ -280,15 +276,13 @@ class AtomDecoder(eqx.Module):
         context: AtomContext,
         atom_to_token: Int[Array, " N"],
         mask: Bool[Array, " N"],
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> Float[Array, "N 3"]:
         q = q + self.linear_a(a)[atom_to_token]
-        q = self.transformer(q, context.modulations, context.rope, mask, key=key)
+        q = self.transformer(q, context.modulations, context.rope, mask)
         return self.linear_out(self.norm_out(q))
 
 
-class InputEmbedder(AbstractInputEmbedder):
+class InputEmbedder(AbstractInputEmbedder[Features]):
     """`s_inputs`: the atom encoder's per-token aggregates, then the token features.
     Without `msa_profile` (checkpoints with `disable_msa_features`) the token features' MSA
     profile and deletion mean are zero."""
@@ -296,23 +290,12 @@ class InputEmbedder(AbstractInputEmbedder):
     encoder: AtomEncoder  # without noisy positions
     msa_profile: bool = eqx.field(static=True, default=True)
 
-    def __call__(self, features: Features, *, key: PRNGKeyArray | None = None) -> Float[Array, "T Ci"]:
-        token_features = features.token_features
+    def __call__(self, features: Features) -> Float[Array, "T Ci"]:
+        atoms, token_features = features.atoms, features.token_features
         if not self.msa_profile:  # residue type, then profile and deletion mean
             token_features = token_features.at[:, NUM_CLASSES:].set(0.0)
-        return self.embed(features.atoms, token_features, key=key)
-
-    def embed(
-        self,
-        atoms: Atoms,
-        token_features: Float[Array, "T F"],
-        *,
-        key: PRNGKeyArray | None = None,
-    ) -> Float[Array, "T Ci"]:
         context = self.encoder.condition(atoms)
-        a, _ = self.encoder(
-            context, atoms.atom_to_token, atoms.mask, token_features.shape[0], key=key
-        )
+        a, _ = self.encoder(context, atoms.atom_to_token, atoms.mask, token_features.shape[0])
         return jnp.concatenate([a, token_features], axis=-1)
 
 
@@ -340,12 +323,11 @@ class DiffusionContext(eqx.Module):
 
     @property
     def atom_mask(self) -> Bool[Array, " N"]:
-        """The atoms the denoiser moves (real, not padding): what a sampler centres and
-        aligns on."""
+        """The atoms the denoiser moves: what a sampler centres and aligns on."""
         return self.atoms.mask
 
 
-class DiffusionModule(AbstractDiffusionModule):
+class DiffusionModule(AbstractDiffusionModule[Features]):
     """AF3 Algorithm 20 with EDM preconditioning, on ESMFold2's atom encoder and decoder.
     The single is conditioned on `s_inputs` alone (no trunk single), and the atom
     encoder does not see the trunk."""
@@ -363,34 +345,17 @@ class DiffusionModule(AbstractDiffusionModule):
         return self.conditioning.sigma_data
 
     def prepare(self, features: Features, inputs: TrunkInputs, state: TrunkState) -> DiffusionContext:
-        return self.context(
-            features.atoms,
-            inputs.s_inputs,
-            state.z,
-            inputs.extras.relative_positions,
-            features.token_mask,
-        )
-
-    def context(
-        self,
-        atoms: Atoms,
-        s_inputs: Float[Array, "T Ci"],
-        z_trunk: Float[Array, "T T Cz"],
-        relative_positions: Float[Array, "T T Cz"],
-        token_mask: Bool[Array, " T"],
-    ) -> DiffusionContext:
-        """`relative_positions`: the trunk's embedded relative position encoding."""
-        z = self.conditioning.pair(z_trunk, relative_positions)
-        encoder = self.encoder.condition(atoms)
+        z = self.conditioning.pair(state.z, inputs.extras.relative_positions)
+        encoder = self.encoder.condition(features.atoms)
         decoder = AtomContext(
             single=encoder.single,
             rope=encoder.rope,
             modulations=self.decoder.transformer.modulations(encoder.single),
         )
         return DiffusionContext(
-            s_inputs=s_inputs,
-            token_mask=token_mask,
-            atoms=atoms,
+            s_inputs=inputs.s_inputs,
+            token_mask=features.token_mask,
+            atoms=features.atoms,
             encoder=encoder,
             decoder=decoder,
             token_biases=self.transformer.pair_biases(z),
@@ -401,23 +366,18 @@ class DiffusionModule(AbstractDiffusionModule):
         context: DiffusionContext,
         x_noisy: Float[Array, "N 3"],
         t: Float[Array, ""],
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> Float[Array, "N 3"]:
         """The denoised positions at noise level `t`."""
-        k_encoder, k_transformer, k_decoder = split_key(key, 3)
         atoms, sigma_data = context.atoms, self.sigma_data
         no_trunk = jnp.zeros((context.s_inputs.shape[0], 0), context.s_inputs.dtype)
         s = self.conditioning.single(no_trunk, context.s_inputs, t)
         r = x_noisy / jnp.sqrt(t**2 + sigma_data**2)
         num_tokens = context.token_mask.shape[0]
-        a, q = self.encoder(
-            context.encoder, atoms.atom_to_token, atoms.mask, num_tokens, r, key=k_encoder
-        )
+        a, q = self.encoder(context.encoder, atoms.atom_to_token, atoms.mask, num_tokens, r)
         a = a + self.linear_s(self.norm_s(s))
-        a = self.transformer(a, s, context.token_biases, context.token_mask, key=k_transformer)
+        a = self.transformer(a, s, context.token_biases, context.token_mask)
         r_update = self.decoder(
-            self.norm_a(a), q, context.decoder, atoms.atom_to_token, atoms.mask, key=k_decoder
+            self.norm_a(a), q, context.decoder, atoms.atom_to_token, atoms.mask
         )
         scale = sigma_data**2 + t**2
         return sigma_data**2 / scale * x_noisy + sigma_data * t / jnp.sqrt(scale) * r_update
@@ -445,8 +405,8 @@ def msa_features(
     deletion_value: Float[Array, "S T"],
     msa_mask: Bool[Array, "S T"],
 ) -> Float[Array, "S T 35"]:
-    """The MSA feature vector `[S, T, 35]`: residue (a probability vector over 33 classes,
-    zero where masked), has-deletion, deletion value."""
+    """The MSA feature vector: residue (a probability vector over 33 classes, zero where
+    masked), has-deletion, deletion value."""
     residue = msa * msa_mask[..., None]
     return jnp.concatenate([residue, has_deletion[..., None], deletion_value[..., None]], -1)
 
@@ -462,7 +422,7 @@ class RowAttentionPooling(eqx.Module):
         return self.linear_out(jnp.einsum("ij,ijc->ic", jax.nn.softmax(scores, axis=-1), z))
 
 
-class ConfidenceModule(AbstractConfidenceModule):
+class ConfidenceModule(AbstractConfidenceModule[Features]):
     """ESMFold2's confidence head: the trunk pair plus embeddings of `s_inputs`, the
     relative positions and bonds, and the predicted distances, through a pair stack (its
     output added back to its input); a single pooled from the pair rows feeds per-atom
@@ -489,41 +449,16 @@ class ConfidenceModule(AbstractConfidenceModule):
         *,
         key: PRNGKeyArray | None = None,
     ) -> ConfidenceLogits:
-        extras = inputs.extras
-        return self.logits(
-            inputs.s_inputs,
-            state.z,
-            coords[features.rep_atom],
-            features.atoms.atom_to_token,
-            features.atom_position,
-            features.token_mask,
-            extras.relative_positions + extras.bonds,
-            key=key,
-        )
-
-    def logits(
-        self,
-        s_inputs: Float[Array, "T Ci"],
-        z_trunk: Float[Array, "T T Cz"],
-        rep_coords: Float[Array, "T 3"],
-        atom_to_token: Int[Array, " N"],
-        atom_position: Int[Array, " N"],
-        mask: Bool[Array, " T"],
-        pair_features: Float[Array, "T T Cz"] | None = None,
-        *,
-        key: PRNGKeyArray | None = None,
-    ) -> ConfidenceLogits:
-        """`pair_features`: the trunk's embedded relative positions and bonds.
-        `atom_position`: each atom's index within its token (at most 22)."""
-        z = self.norm_z(z_trunk)
-        if pair_features is not None:
-            z = z + pair_features
-        z = z + self.singles_to_pair(self.norm_s_inputs(s_inputs))
-        z = z + self.distances(pairwise_distances(rep_coords))
+        extras, mask = inputs.extras, features.token_mask
+        z = self.norm_z(state.z) + extras.relative_positions + extras.bonds
+        z = z + self.singles_to_pair(self.norm_s_inputs(inputs.s_inputs))
+        z = z + self.distances(pairwise_distances(coords[features.rep_atom]))
         _, out = self.stack(None, z, mask, key=key)
         z = z + out
         s = self.pooling(z, mask)
-        position = jnp.minimum(atom_position, self.plddt.weight.shape[0] - 1)
+        atom_to_token = features.atoms.atom_to_token
+        # Each atom's index within its token, capped at the heads' last position.
+        position = jnp.minimum(features.atom_position, self.plddt.weight.shape[0] - 1)
         return ConfidenceLogits(
             pae=self.pae(z),
             pde=None if self.pde is None else self.pde(z),
@@ -627,8 +562,7 @@ class ESMCForMaskedLM(eqx.Module):
     mask a position with `ESMC_VOCAB["<mask>"]`)."""
 
     head: MaskedLMHead
-    # The language model. None only as stored: `jfold.pretrained` attaches the shared ESMC
-    # on loading.
+    # None only as stored: `jfold.pretrained` attaches the shared ESMC on loading.
     esmc: ESMC | None = None
 
     def __call__(
@@ -740,20 +674,19 @@ def language_model_hidden(esmc: ESMC | None, features: Features) -> Float[Array,
     return jnp.swapaxes(token_hidden_states(hidden, lm.positions), 0, 1)
 
 
-class TrunkInit(AbstractTrunkInit):
+class TrunkInit(AbstractTrunkInit[Features]):
     """The initial pair (`s_inputs`, relative positions and bonds), the language model's
-    pair (from ESMC, which it holds), and the MSA with `msa_column_mask_rate` of its
-    columns masked outside the query, once per forward pass. The single is `s_inputs`.
+    pair (from ESMC, which it holds), and the column-masked MSA. The single is `s_inputs`.
     With `lm_dropout` (the experimental type), the language model's pair is added to the
     initial pair here, through that dropout; the release type's trunk injects it every
-    loop instead."""
+    loop."""
 
     singles_to_pair: SinglesToPair  # s_inputs -> pair
     relative_positions: Linear
     bonds: Linear
     language_model: LanguageModelPair
-    # The language model. None only as stored: `jfold.pretrained` attaches the shared
-    # ESMC on loading (`jfold.pretrained.recipes.esmfold2`).
+    # None only as stored: `jfold.pretrained` attaches the shared ESMC on loading
+    # (`jfold.pretrained.recipes.esmfold2`).
     esmc: ESMC | None = None
     lm_dropout: Dropout | Identity | None = None
     # The share of MSA columns masked outside the query, once per forward pass.
@@ -790,7 +723,7 @@ class TrunkInit(AbstractTrunkInit):
         )
 
 
-class ParcaeTrunk(AbstractTrunk):
+class ParcaeTrunk(AbstractTrunk[Features]):
     """The release type's pair trunk: a Parcae recurrence from a random state, injecting
     the initial pair, the language model's pair and the MSA every loop, then the pair
     stack; `finish` reads the state out through the coda."""
@@ -863,7 +796,7 @@ class TrackedMSA(eqx.Module):
         return jnp.where(msa_mask[1:].any(), z, 0.0)
 
 
-class RecyclingPairTrunk(AbstractTrunk):
+class RecyclingPairTrunk(AbstractTrunk[Features]):
     """The experimental type's pair trunk: from zeros, each loop recycles the previous pair
     onto the initial one (AF3-style), adds the MSA update, then runs the pair stack."""
 
@@ -872,7 +805,6 @@ class RecyclingPairTrunk(AbstractTrunk):
     trunk: PairformerStack
 
     def init_state(self, inputs: TrunkInputs, *, key: PRNGKeyArray | None = None) -> TrunkState:
-        del key
         return TrunkState(s=inputs.s_init, z=jnp.zeros_like(inputs.z_init))
 
     def __call__(
@@ -895,16 +827,16 @@ class RecyclingPairTrunk(AbstractTrunk):
 
 def features(f: dict, *, r_max: int = 32, s_max: int = 2) -> Features:
     """`Features` from the upstream model's forward inputs (`EsmFold2Model.forward`'s
-    keyword arguments, unbatched arrays). `res_type` (`[T]`) and `msa` (`[S, T]`) may
-    instead be probability vectors over the 33 classes (`[T, 33]`, `[S, T, 33]`), e.g. a
-    soft sequence. `lm_hidden_states` (`[T, layers, D]`, zero off-protein) are precomputed
-    ESMC states per token. Without them the features carry ESMC's input instead, built
-    from `res_type` (so a soft sequence reaches the language model), for the trunk init to
-    run ESMC on (both in `extras`, a `LanguageModelInput`). The MSA profile is computed from
-    the MSA, as upstream (the input embedder zeroes it where its checkpoint does:
-    `InputEmbedder.msa_profile`). Traceable: the arrays
-    may be traced under `jit`, except that without `lm_hidden_states` ESMC's layout (which
-    token goes in which row) needs the chain, residue and molecule ids concrete."""
+    keyword arguments, unbatched). `res_type` (`[T]`) and `msa` (`[S, T]`) may be
+    probability vectors over the 33 classes (`[T, 33]`, `[S, T, 33]`), e.g. a soft
+    sequence. `lm_hidden_states` (`[T, layers, D]`, zero off-protein) are precomputed ESMC
+    states per token. Without them the features carry ESMC's input, built from `res_type`
+    (so a soft sequence reaches the language model), for the trunk init to run ESMC on
+    (both in `extras`, a `LanguageModelInput`). The MSA profile is computed from the MSA,
+    as upstream (the input embedder zeroes it where its checkpoint does:
+    `InputEmbedder.msa_profile`). The arrays may be traced under `jit`, except that
+    without `lm_hidden_states` ESMC's layout (which token goes in which row) needs the
+    chain, residue and molecule ids concrete."""
     layout = None if "lm_hidden_states" in f else _static_lm_layout(f)
     a = arrays(f)
     token_mask = a["token_attention_mask"].astype(bool)

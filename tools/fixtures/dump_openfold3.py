@@ -10,10 +10,10 @@ Writes `tests/featurize/data/openfold3_<system>.npz` for every system in
     uv run python tools/fixtures/dump_openfold3.py [system ...]
 
 dumps the named systems only. Each file holds the tensors of `InferenceDataset(config)[0]`
-as numpy arrays, UNBATCHED (no leading batch dimension, exactly as the dataset item
-comes out; `jfold.models.openfold3.features` takes this layout directly). Dtypes are
-kept as upstream produces them (int32 / float32). The bookkeeping entries `atom_array`,
-`query_id`, `seed`, `repeated_sample` and `valid_sample` are dropped.
+as numpy arrays, unbatched as the dataset item comes out (the layout
+`jfold.models.openfold3.features` takes), in upstream's dtypes (int32 / float32). The
+bookkeeping entries `atom_array`, `query_id`, `seed`, `repeated_sample` and `valid_sample`
+are dropped.
 
 The pipeline is driven as jfold's checkpoint test drives it:
 `MSASettings(subsample_main=False)`, `TemplateSettings(take_top_k=True)`; templates as below.
@@ -34,14 +34,13 @@ an `.m8` file naming `tmpl_<chain id>`, which upstream realigns with Kalign.
 `TemplatePreprocessor` runs first, as the inference data module runs it. The installed
 `InferenceDataset` passes `template_cache_directory=None` to
 `process_template_structures_of3`, which then drops every template; the script passes the
-preprocessor's cache directory instead, as upstream OpenFold3 now does.
+preprocessor's cache directory, as current upstream OpenFold3 does.
 
-Randomness: the only random features are `ref_pos` (an RDKit ETKDGv3 conformer per
+Randomness: the only random feature is `ref_pos` (an RDKit ETKDGv3 conformer per
 residue whose seed is drawn from Python's global `random`, then a random rotation and a
 unit-normal translation drawn from torch's global generator). Seeding `random`,
 `numpy.random` and `torch` right before featurizing makes the output reproducible for a
 given RDKit / torch build; the script checks this by featurizing every system twice.
-Every other feature is deterministic.
 """
 
 import json
@@ -66,7 +65,7 @@ DROP = ("atom_array", "query_id", "seed", "repeated_sample", "valid_sample")
 def featurize(system: dict, seed: int = SEED) -> dict[str, np.ndarray]:
     """The upstream batch of one system, as numpy arrays without a batch dimension."""
     with warnings.catch_warnings():
-        # Query-only chains warn that a dummy MSA is used; that is intended here.
+        # Query-only chains warn that a dummy MSA is used, as intended.
         warnings.simplefilter("ignore")
         return _featurize(system, seed)
 

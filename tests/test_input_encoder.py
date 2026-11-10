@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import torch
-from reference import assert_finite, randomize, rel_err
+from reference import assert_finite, block_features, randomize, rel_err
 from test_atoms import (
     ATOMS_PER_TOKEN,
     C_ATOM,
@@ -270,7 +270,7 @@ CASES = {
 def _encode(encoder, features, ref_pos, ref_space_uid, atom_to_token, mask, num_tokens):
     q, c, p = encoder.condition(Atoms(features, ref_pos, ref_space_uid, atom_to_token, mask))
     biases = encoder.transformer.pair_biases(p)
-    return encoder(q, c, biases, atom_to_token, mask, num_tokens, key=jax.random.key(0))[0]
+    return encoder(q, c, biases, atom_to_token, mask, num_tokens)[0]
 
 
 @pytest.mark.parametrize("padding", [0, 40], ids=["unpadded", "padded"])
@@ -538,7 +538,15 @@ EMBEDDERS = {
 
 @eqx.filter_jit
 def _embed(embedder, atoms, token_features, keep):
-    return embedder.embed(atoms, token_features, keep, key=jax.random.key(0))
+    return embedder(
+        block_features(
+            token_features.shape[0],
+            atoms.mask.shape[0],
+            atoms=atoms,
+            token_features=token_features,
+            keep_aggregate=keep,
+        )
+    )
 
 
 @pytest.mark.parametrize("padding", [0, 40], ids=["unpadded", "padded"])

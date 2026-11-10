@@ -64,7 +64,7 @@ def test_bioemu2_paired_queries(name):
 def test_parse_a3m():
     a3m = parse_a3m((FIXTURES / "chain_A.a3m").read_text())
     assert len(a3m.rows) == 6 and {len(r) for r in a3m.rows} == {22}
-    # hit2: "MKSAYIAKqqQRQLSFV--HFSRQ" -- two insertions before the Q at column 8.
+    # hit2 is "MKSAYIAKqqQRQLSFV--HFSRQ": two insertions before the Q at column 8.
     assert a3m.rows[2] == "MKSAYIAKQRQLSFV--HFSRQ"
     assert a3m.deletions[2].tolist() == [0] * 8 + [2] + [0] * 13
     assert a3m.headers[0] == "query"

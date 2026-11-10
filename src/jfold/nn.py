@@ -1,9 +1,7 @@
-"""Primitives shared by every block: linear and norm layers, gated attention, pair bias,
-the SwiGLU transition, the pair from a single representation, dropout, and scanning over a
-stack of identical layers.
+"""Primitives shared by every block.
 
-Keys: a module whose only randomness is dropout takes `key=None` (dropout off, as it is by
-default); `Dropout` raises if it is on and has no key."""
+A module whose only randomness is dropout takes `key=None` while dropout is off (the
+default)."""
 
 from collections.abc import Callable, Sequence
 
@@ -93,9 +91,30 @@ class Transition(eqx.Module):
         return self.linear_out(jax.nn.silu(self.linear_a(x)) * self.linear_b(x))
 
 
+class SwiGLU(eqx.Module):
+    """`linear_out(silu(linear_a(x)) * linear_b(x))`: `Transition` without its norm."""
+
+    linear_a: Linear
+    linear_b: Linear
+    linear_out: Linear
+
+    def __call__(self, x: Float[Array, "... d"]) -> Float[Array, "... o"]:
+        return self.linear_out(jax.nn.silu(self.linear_a(x)) * self.linear_b(x))
+
+
+class NormLinear(eqx.Module):
+    """`linear(norm(x))`."""
+
+    norm: LayerNorm
+    linear: Linear
+
+    def __call__(self, x: Float[Array, "... d"]) -> Float[Array, "... e"]:
+        return self.linear(self.norm(x))
+
+
 class SinglesToPair(eqx.Module):
     """`z_ij` from a single representation: `linear_i(s_i) + linear_j(s_j)`, plus
-    Boltz-2's `linear_out(in_i(s_i) * in_j(s_j))`."""
+    Boltz-2's `product_out(product_i(s_i) * product_j(s_j))`."""
 
     linear_i: Linear
     linear_j: Linear
@@ -121,11 +140,21 @@ class ReluMLP(eqx.Module):
         return x
 
 
+class ReluMLP2(eqx.Module):
+    """`linear_out(relu(linear_in(x)))`."""
+
+    linear_in: Linear
+    linear_out: Linear
+
+    def __call__(self, x: Float[Array, "... d"]) -> Float[Array, "... e"]:
+        return self.linear_out(jax.nn.relu(self.linear_in(x)))
+
+
 class Dropout(eqx.Module):
     """Dropout with its mask shared along `shared_axes`, scaled by `1 / (1 - rate)`.
     OpenFold's rowwise dropout on a pair `[T, T, C]` shares the mask down the rows
-    (`(0,)`); Boltz's draws one value per row (`(1, 2)`). Off while `inference` is set, as
-    it is by default; `eqx.nn.inference_mode(model, False)` turns it on everywhere in a model.
+    (`(0,)`); Boltz's draws one value per row (`(1, 2)`). Off while `inference` is set (the
+    default); `eqx.nn.inference_mode(model, False)` turns it on everywhere in a model.
     `key` may be None only while it is off."""
 
     rate: float = eqx.field(static=True)
@@ -145,15 +174,15 @@ class Dropout(eqx.Module):
 
 
 def split_key(key: PRNGKeyArray | None, num: int = 2) -> tuple[PRNGKeyArray | None, ...]:
-    """`num` keys from `key`, or `num` Nones from None (no dropout, nothing to draw)."""
+    """`num` keys from `key`, or `num` Nones from None."""
     if key is None:
         return (None,) * num
     return tuple(jax.random.split(key, num))
 
 
 def stack[M: eqx.Module](layers: Sequence[M]) -> M:
-    """Stack identical layers into one module whose arrays have a leading layer axis
-    (non-array fields, identical across layers, are kept as they are)."""
+    """Stack identical layers into one module whose arrays have a leading layer axis;
+    non-array fields are the first layer's."""
     return jax.tree.map(lambda *xs: jnp.stack(xs) if eqx.is_array(xs[0]) else xs[0], *layers)
 
 

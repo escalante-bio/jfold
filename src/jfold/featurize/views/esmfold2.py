@@ -2,7 +2,7 @@
 proteins (see `docs/upstream-featurization/esmfold2.md`): the dict `jfold.models.esmfold2.features`
 takes, plus ESMC's packed token inputs (`lm_input_ids`, `lm_sequence_id`, `lm_positions`).
 
-Nothing here is random: reference conformers are the raw CCD "Computed" conformers of
+Deterministic: reference conformers are the raw CCD "Computed" conformers of
 ESMFold2's own pickle, unposed, and the MSA rows are taken in order."""
 
 import re

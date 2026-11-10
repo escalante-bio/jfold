@@ -98,7 +98,7 @@ CASES = {
 
 @eqx.filter_jit
 def _forward(model, a, s, z, mask):
-    return model(a, s, model.pair_biases(z), mask, key=jax.random.key(0))
+    return model(a, s, model.pair_biases(z), mask)
 
 
 @eqx.filter_jit

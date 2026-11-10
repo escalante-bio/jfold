@@ -6,8 +6,8 @@ from jaxtyping import Array, Float
 
 from jfold.blocks.atoms import Atoms
 from jfold.blocks.inputs import relative_position_features
-from jfold.model import Features
 from jfold.models.common import arrays, as_array, msa_features, token_features
+from jfold.slots import Features
 
 
 def atom_features(
@@ -106,9 +106,8 @@ def features(batch: dict, rep_atom=None) -> Features:
 
     `restype`, `profile` and `msa` may be probabilities over OpenFold3's 32 residue classes
     (soft sequences), and every step is traceable, so the dict may be built inside `jit`.
-    Each token's representative atom depends on the featurized atoms, so it is read off
-    `restype` only when `rep_atom` is not given: pass it when `restype` is a soft sequence
-    over a fixed atom layout."""
+    `rep_atom` defaults to `representative_atoms` of `restype`: pass it when `restype` is a
+    soft sequence over a fixed atom layout."""
     f = arrays(batch)
     flt = lambda k: f[k].astype(jnp.float32)
     num_atoms = f["atom_to_token_index"].shape[0]

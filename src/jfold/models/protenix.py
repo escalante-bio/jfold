@@ -6,8 +6,8 @@ from jaxtyping import Array, Float
 
 from jfold.blocks.atoms import Atoms
 from jfold.blocks.inputs import probabilities, relative_position_features
-from jfold.model import Features
 from jfold.models.common import arrays, msa_features, token_features
+from jfold.slots import Features
 
 
 def atom_features(

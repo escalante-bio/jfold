@@ -13,7 +13,7 @@ import pytest
 import torch
 from reference import STEPS, assert_finite, assert_round_trip, assert_schedule, randomize, rel_err
 
-from jfold.model import TrunkState
+from jfold.slots import TrunkState
 
 atlasfold_model = pytest.importorskip("atlasfold.model")
 
@@ -143,7 +143,7 @@ def test_trunk(multimer, system):
         features.token_mask,
     )
     inputs = model.embed(features)
-    state = model.init_state(inputs)
+    state = model.trunk.init_state(inputs)
     for mask_rows in masks:
         state = model.trunk.masked(features, inputs, state, mask_rows)
     assert_finite(state)
@@ -192,8 +192,8 @@ def test_heads(multimer, system):
     features = atlasfold.features(feat)
     inputs = model.embed(features)
     state = TrunkState(s=jnp.array(s), z=jnp.array(z))
-    context = model.denoiser_context(features, inputs, state)
-    ours = model.denoise(context, jnp.array(x_noisy.reshape(-1, 3)), jnp.array(t))
+    context = model.diffusion.prepare(features, inputs, state)
+    ours = model.diffusion(context, jnp.array(x_noisy.reshape(-1, 3)), jnp.array(t))
     ours = atlasfold.atom14(ours)
     conf = model.confidence_logits(features, inputs, state, jnp.array(denoised.reshape(-1, 3)))
     pair = real[:, None] & real[None, :]
@@ -204,7 +204,7 @@ def test_heads(multimer, system):
             conf.resolved[real], confidence["experimentally_resolved"]["logits"][0, 0][real]
         ),
         "pae": rel_err(conf.pae[pair], confidence["pae"]["logits"][0, 0][pair]),
-        "distogram": rel_err(model.distogram_logits(state)[pair], distogram[pair]),
+        "distogram": rel_err(model.distogram(state.z)[pair], distogram[pair]),
     }
     if multimer:
         errors["pde"] = rel_err(conf.pde[pair], confidence["pde"]["logits"][0, 0][pair])
@@ -264,10 +264,10 @@ def test_padding_is_ignored():
 
     def run(f):
         inputs = model.embed(f)
-        state = model.trunk.masked(f, inputs, model.init_state(inputs), mask_rows)
-        context = model.denoiser_context(f, inputs, state)
+        state = model.trunk.masked(f, inputs, model.trunk.init_state(inputs), mask_rows)
+        context = model.diffusion.prepare(f, inputs, state)
         x = jnp.array(rng.standard_normal((real.shape[0] * 14, 3)), jnp.float32)
-        denoised = model.denoise(context, x, jnp.array(3.0))
+        denoised = model.diffusion(context, x, jnp.array(3.0))
         return state, denoised, model.confidence_logits(f, inputs, state, denoised)
 
     rng_state = rng.bit_generator.state
@@ -331,7 +331,7 @@ def test_structure_model():
     stored = _detach_lm(model)
     assert stored.trunk.atlaslm is None
     with pytest.raises(ValueError, match="no AtlasLM"):
-        stored.step(features, inputs, state, key=k_trunk)
+        stored.trunk(features, inputs, state, key=k_trunk)
     restored = _attach_lm(stored, lambda name: model.trunk.atlaslm)
     assert jax.tree.structure(restored) == jax.tree.structure(model)
 
@@ -354,7 +354,7 @@ def test_soft_sequence_reaches_the_language_model():
     def loss(residues):
         f = atlasfold.features(feat | {"aatype": residues})
         inputs = model.embed(f)
-        state = model.trunk.masked(f, inputs, model.init_state(inputs), mask_rows)
+        state = model.trunk.masked(f, inputs, model.trunk.init_state(inputs), mask_rows)
         return state.z.sum()
 
     grad = np.asarray(jax.grad(loss)(soft))

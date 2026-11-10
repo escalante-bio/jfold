@@ -1,6 +1,6 @@
 """Dropout: each converted model's dropout shares its mask along the same axes as the
 upstream's own, at the upstream's rate; off by default, on with `eqx.nn.inference_mode`.
-(Masks are random, so the comparison is of their structure, not their values.)"""
+Masks are random, so only their structure is compared."""
 
 import equinox as eqx
 import jax
@@ -168,7 +168,7 @@ def test_inference_mode_reaches_scanned_layers():
 
 def test_keys_are_optional_while_dropout_is_off():
     """Without a key a stack runs as it does with any key while its dropout is off; once
-    dropout is on it refuses to run without one (rather than reuse one mask)."""
+    dropout is on it refuses to run without one, so no mask is reused."""
     stack = _boltz_stack()
     s, z = jnp.ones((T, 16)), jax.random.normal(jax.random.key(0), (T, T, C))
     mask = jnp.ones(T, bool)

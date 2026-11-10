@@ -1,6 +1,5 @@
 """A model's own sampler settings, as its upstream defines them."""
 
-import dataclasses
 from collections.abc import Callable
 from typing import Literal
 
@@ -14,8 +13,7 @@ from jfold.sampling.core import SamplerSettings
 class UpstreamSampler(eqx.Module):
     """Upstream's sampler for one model: its noise schedule, churn and frame policy.
     Converters attach one to each model (`model.sampling`); `settings()` builds the
-    `SamplerSettings` that reproduce the upstream loop, and a model's
-    `structure_sampler(...)` uses them.
+    `SamplerSettings` that reproduce the upstream loop.
 
     The schedule is `schedules.Karras(rho)` over `sigma_data * [s_max, s_min]` on an
     evenly spaced grid, ended by `end`:
@@ -30,8 +28,8 @@ class UpstreamSampler(eqx.Module):
 
     Every converter centres on the real atoms (`masked_centering`). Upstreams that
     centre on the plain mean (Boltz-2, ProMERA, OpenDDE) count their own padding atoms
-    in it; without padding the two are the same, and with it only the masked mean keeps
-    padding from moving the sample.
+    in it; the two agree without padding, and with it only the masked mean keeps padding
+    from moving the sample.
     """
 
     sigma_data: float = eqx.field(static=True)
@@ -79,11 +77,14 @@ class UpstreamSampler(eqx.Module):
     ) -> SamplerSettings:
         """The upstream sampler's settings, `num_steps` steps (upstream's count by default;
         fewer survive a `max_sigma` cap)."""
-        shared = {name: getattr(self, name) for name in _SHARED}
-        return SamplerSettings(sigmas=self.sigmas(num_steps, schedule=schedule), **shared)
-
-
-# The `SamplerSettings` fields an `UpstreamSampler` sets: all but the schedule and `update`.
-_SHARED = [
-    f.name for f in dataclasses.fields(SamplerSettings) if f.name not in ("sigmas", "update")
-]
+        return SamplerSettings(
+            sigmas=self.sigmas(num_steps, schedule=schedule),
+            gamma_0=self.gamma_0,
+            gamma_min=self.gamma_min,
+            noise_scale=self.noise_scale,
+            step_scale=self.step_scale,
+            center=self.center,
+            augment=self.augment,
+            augment_after_noise=self.augment_after_noise,
+            align=self.align,
+        )

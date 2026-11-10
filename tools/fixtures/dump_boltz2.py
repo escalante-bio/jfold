@@ -1,26 +1,25 @@
-"""Dump Boltz-2's upstream feature dict for each fixture system in `tests/featurize/data/systems.json`.
+"""Dump Boltz-2's upstream feature dict for each fixture system in
+`tests/featurize/data/systems.json`.
 
 Run from the jfold root:
 
     uv run python tools/fixtures/dump_boltz2.py
 
-Writes `tests/featurize/data/boltz2_<system>.npz`, one per system, numpy arrays only, with the batch
-axis removed (the layout `jfold.models.boltz2.features` takes). Every tensor in the feature
-dict is saved under its upstream key. Two extra keys are added for parity tests:
+Writes `tests/featurize/data/boltz2_<system>.npz`, numpy arrays only, without the batch
+axis (the layout `jfold.models.boltz2.features` takes). Every tensor in the feature dict is
+saved under its upstream key, plus two keys for parity tests:
 
 - `ref_pos_raw` `[A, 3]` float32: the reference conformer coordinates before Boltz's
-  per-residue centering and random rotation/translation, padded like `ref_pos`. These
-  come from a second featurization in which `center_random_augmentation` is the
-  identity.
+  per-residue centering and random rotation/translation, padded like `ref_pos`, from a
+  second featurization in which `center_random_augmentation` is the identity.
 - `ref_conformer_id` `[R]` int64: the conformer (of the 10 stored in each
-  `~/.boltz/mols/<RES>.pkl`) used for each residue, in token order. It is replayed from
+  `~/.boltz/mols/<RES>.pkl`) used for each residue, in token order, replayed from
   `np.random.default_rng(42)`, the generator `PredictionDataset.__getitem__` creates. The
   script checks that the replay reproduces `ref_pos_raw`.
 
 Determinism:
 
-- The conformer choice uses numpy's `default_rng(42)`, which upstream seeds itself. It is
-  deterministic.
+- The conformer choice uses numpy's `default_rng(42)`, which upstream seeds itself.
 - `ref_pos` is centred per residue, then given a random rotation and a N(0, 1) Å
   translation, both drawn from torch's global RNG. The script calls `torch.manual_seed(0)`
   first, so the saved `ref_pos` is reproducible with this torch version, but a numpy/JAX
@@ -166,7 +165,7 @@ def _conformer_ids(n_residues: int) -> np.ndarray:
 
 
 def _check_conformers(f: dict, conf_ids: np.ndarray, system: dict) -> None:
-    """`ref_pos_raw` is exactly the chosen conformer's coordinates of each residue's atoms."""
+    """`ref_pos_raw` equals the chosen conformer's coordinates of each residue's atoms."""
     import pickle
 
     from boltz.data import const

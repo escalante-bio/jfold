@@ -78,7 +78,6 @@ def local_alignments(query: str, template: str) -> list[Alignment]:
     if not runs:
         return []
     best = max(r[0] for r in runs)
-    # A run's segment ends where its score first reaches the best.
     first = {}
     for score, q_start, q_end, t_start in runs:
         if score == best:

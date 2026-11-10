@@ -23,7 +23,7 @@ from jfold.sampling.core import (
     rigid_align_stop_gradient,
     sample,
 )
-from jfold.sampling.structure import StructureSampler, structure_sampler
+from jfold.sampling.structure import StructureSampler
 
 __all__ = [
     "Denoise",
@@ -43,5 +43,4 @@ __all__ = [
     "rigid_align_stop_gradient",
     "sample",
     "schedules",
-    "structure_sampler",
 ]

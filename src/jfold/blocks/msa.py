@@ -173,8 +173,8 @@ class MSAModule(AbstractMSAModule):
     `jfold.models.*.msa_features`, plus `s_inputs`), then update the pair through stacked
     `MSALayer`s and, when the last block differs (no MSA update), a final one.
 
-    Each call (each trunk pass) reads the MSA rows its upstream draws, drawn afresh
-    (`draw_rows`); a draw needs a `key`:
+    Each call (each trunk pass) draws afresh the MSA rows its upstream reads (`draw_rows`);
+    a draw needs a `key`:
 
     - At most `max_rows` rows (`None`: every row), uniformly without replacement from the
       real rows. With `keep_query` (ESMFold2) the query is always among them; Boltz-2,
@@ -244,8 +244,7 @@ class MSAModule(AbstractMSAModule):
 
 class ResidualMSA(AbstractMSAModule):
     """The MSA module as Boltz-2's and ProMERA's trunks apply it: `z + msa(z)`, where the
-    module's output pair already includes its input, so the incoming pair counts twice.
-    Same call as `MSAModule`."""
+    module's output pair already includes its input, so the incoming pair counts twice."""
 
     module: MSAModule
 

@@ -24,9 +24,9 @@ KEY = jax.random.key(0)
 
 def _trunk(model, features):
     inputs = model.embed(features, key=KEY)
-    state = model.init_state(inputs)
+    state = model.trunk.init_state(inputs)
     for _ in range(NUM_RECYCLES):
-        state = model.step(features, inputs, state, key=KEY)
+        state = model.trunk(features, inputs, state, key=KEY)
     return inputs, state
 
 
@@ -62,8 +62,8 @@ def _batch():
 
 def test_promera():
     from jfold.convert import promera as convert
-    from jfold.model import TrunkState
     from jfold.models import promera as promera_features
+    from jfold.slots import TrunkState
 
     reference = _reference()
     batch = _batch()
@@ -143,8 +143,8 @@ def test_promera():
     ref_inputs = type(inputs)(
         s_inputs=jnp.array(ref["s_inputs"]), s_init=inputs.s_init, z_init=inputs.z_init
     )
-    context = model.denoiser_context(features, ref_inputs, ref_state)
-    ours = model.denoise(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL), key=KEY)
+    context = model.diffusion.prepare(features, ref_inputs, ref_state)
+    ours = model.diffusion(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL))
     errors["denoised"] = rel_err(ours[:num_atoms], ref["denoised"][:num_atoms])
     conf = model.confidence_logits(
         features, ref_inputs, ref_state, jnp.array(ref["denoised"]), key=KEY
@@ -152,7 +152,7 @@ def test_promera():
     errors["pae"] = rel_err(conf.pae, ref["pae"])
     errors["pde"] = rel_err(conf.pde, ref["pde"])
     errors["plddt"] = rel_err(conf.plddt, ref["plddt"])
-    errors["distogram"] = rel_err(model.distogram_logits(ref_state), ref["distogram"])
+    errors["distogram"] = rel_err(model.distogram(ref_state.z), ref["distogram"])
     print(errors)
 
     assert conf.resolved is None

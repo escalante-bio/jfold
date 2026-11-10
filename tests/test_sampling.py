@@ -321,8 +321,7 @@ def test_sampling_config_builds_the_settings():
 
 
 def test_structure_sampler():
-    """A `StructureSampler` samples as the loop does, over a batch of keys, and with other
-    settings."""
+    """A `StructureSampler` samples as the loop does, and over a batch of keys."""
     from jfold.sampling import StructureSampler
 
     target = _target()
@@ -334,12 +333,5 @@ def test_structure_sampler():
     assert jnp.array_equal(
         structure_sampler.sample(key), sample(_point_denoiser(target), MASK, settings, key=key)
     )
-    noise = Noise.draw(key, num_steps=10, num_atoms=NUM_ATOMS)
-    assert jnp.array_equal(structure_sampler.integrate(noise), structure_sampler.integrate(noise))
     batch = jax.vmap(structure_sampler.sample)(jax.random.split(key, 3))
     assert batch.shape == (3, NUM_ATOMS, 3)
-    few = structure_sampler.with_settings(
-        SamplerSettings(sigmas=_sigmas(4)), update=exponential_update
-    )
-    assert few.num_steps == 4 and few.settings.update is exponential_update
-    assert _rmsd_after_alignment(few.sample(key), target) < 1e-3

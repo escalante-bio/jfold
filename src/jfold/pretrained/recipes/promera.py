@@ -19,8 +19,8 @@ def _fetch(directory: Path) -> None:
 
 def _build(checkpoint: Path):
     """As `python -m promera` builds it: the package's model config (`model/config.yaml`),
-    then the checkpoint's EMA weights (`promera.utils.load_weights`), here loaded strictly
-    so that every tensor is accounted for. Building and loading run on the CPU; only the
+    then the checkpoint's EMA weights (`promera.utils.load_weights`), loaded strictly here
+    so every tensor is accounted for. Building and loading run on the CPU; only the
     forward pass needs cuequivariance's CUDA kernels."""
     import torch
     from omegaconf import OmegaConf

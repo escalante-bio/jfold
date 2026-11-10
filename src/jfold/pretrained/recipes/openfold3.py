@@ -1,5 +1,4 @@
-"""OpenFold3 (`of3-p2-155k.pt`, the default checkpoint), as `run_openfold predict` loads
-it."""
+"""OpenFold3 (`of3-p2-155k.pt`), as `run_openfold predict` loads it."""
 
 from pathlib import Path
 

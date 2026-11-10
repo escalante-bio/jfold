@@ -85,8 +85,6 @@ def dilate(t: np.ndarray, *, start: float, end: float, dilation: float) -> np.nd
 
 
 def cap(sigmas: np.ndarray, max_sigma: float) -> np.ndarray:
-    """Drop sigmas above `max_sigma` and start from `max_sigma` instead.
-
-    Shortens the schedule: the step count is whatever survives the cap.
-    """
+    """Drop sigmas above `max_sigma` and start from it; the step count is whatever
+    survives."""
     return np.concatenate([[max_sigma], sigmas[sigmas <= max_sigma]]).astype(np.float32)

@@ -83,9 +83,9 @@ def _featurize(common: Path) -> dict:
 
 def _trunk(model, features):
     inputs = model.embed(features, key=KEY)
-    state = model.init_state(inputs)
+    state = model.trunk.init_state(inputs)
     for _ in range(NUM_RECYCLES):
-        state = model.step(features, inputs, state, key=KEY)
+        state = model.trunk(features, inputs, state, key=KEY)
     return inputs, state
 
 
@@ -93,8 +93,8 @@ def test_mol1_base():
     from mol.model.mol import update_input_feature_dict
 
     from jfold.convert import protenix
-    from jfold.model import TrunkState
     from jfold.models import mol1 as mol1_features
+    from jfold.slots import TrunkState
 
     root = _release_dir()
     reference = _reference_model(root / "checkpoint" / "mol-1-base.pt")
@@ -140,8 +140,8 @@ def test_mol1_base():
 
     # Later stages from the reference trunk, so errors do not compound.
     ref_state = TrunkState(s=jnp.array(s.numpy()), z=jnp.array(z.numpy()))
-    context = model.denoiser_context(features, inputs, ref_state)
-    ours = model.denoise(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL), key=KEY)
+    context = model.diffusion.prepare(features, inputs, ref_state)
+    ours = model.diffusion(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL))
     errors["denoised"] = rel_err(ours, denoised)
     conf = model.confidence_logits(
         features, inputs, ref_state, jnp.array(denoised.numpy()), key=KEY
@@ -150,7 +150,7 @@ def test_mol1_base():
     errors["pde"] = rel_err(conf.pde, pde[0])
     errors["plddt"] = rel_err(conf.plddt, plddt[0])
     errors["resolved"] = rel_err(conf.resolved, resolved[0])
-    errors["distogram"] = rel_err(model.distogram_logits(ref_state), distogram)
+    errors["distogram"] = rel_err(model.distogram(ref_state.z), distogram)
     print(" ".join(f"{k}={v:.1e}" for k, v in errors.items()))
 
     tolerances = {"s_inputs": 1e-4, "denoised": 1e-4, "distogram": 1e-4}

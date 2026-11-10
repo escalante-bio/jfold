@@ -27,7 +27,7 @@ RECYCLES = 3  # upstream's default: 1 + 3 trunk passes
 @eqx.filter_jit
 def predict(model, features, key, num_samples: int):
     """Trunk, then `num_samples` structures from the diffusion sampler and each one's pLDDT
-    logits. The model is an argument, not a closure, so the compiled function is reused."""
+    logits. The model is an argument so that the compiled function is reused."""
     k_trunk, k_sample, k_confidence = jax.random.split(key, 3)
     inputs, state = model.run_trunk(features, num_passes=RECYCLES + 1, key=k_trunk)
     sampler = model.structure_sampler(features, inputs, state)  # upstream's sampler settings
@@ -71,7 +71,7 @@ def main():
     features = boltz2.features(f)
 
     # 3. The model: the converted checkpoint, with upstream's sampler settings.
-    model = pretrained.boltz2()
+    model = pretrained.load("boltz2")
 
     # 4. Predict, keep the most confident sample.
     coords, plddt_logits = predict(model, features, key_predict, args.samples)

@@ -3,9 +3,9 @@ pipeline (torch; it builds the ligand's conformer with RDKit), convert the featu
 jfold's features, predict with jfold's converted model, and write the most confident
 sample as mmCIF with Boltz's own writer.
 
-`jfold.featurize` takes proteins only; anything else (ligands, nucleic acids, modified
-residues, paired MSAs) goes through the upstream featurization as here. The upstream
-package comes with the `reference` dependency group:
+`jfold.featurize` takes proteins only; ligands, nucleic acids, modified residues and paired
+MSAs go through the upstream featurization, as here. The upstream package comes with the
+`reference` dependency group:
 
     uv sync --group reference
     uv run python examples/predict_boltz2_ligand.py MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQ --smiles "CC(=O)Oc1ccccc1C(=O)O"
@@ -107,7 +107,7 @@ def upstream_features(yaml: str, directory: Path, seed: int):
 @eqx.filter_jit
 def predict(model, features, key, num_samples: int):
     """Trunk, then `num_samples` structures from the diffusion sampler and each one's pLDDT
-    logits. The model is an argument, not a closure, so the compiled function is reused."""
+    logits. The model is an argument so that the compiled function is reused."""
     k_trunk, k_sample, k_confidence = jax.random.split(key, 3)
     inputs, state = model.run_trunk(features, num_passes=RECYCLES + 1, key=k_trunk)
     sampler = model.structure_sampler(features, inputs, state)  # upstream's sampler settings
@@ -165,7 +165,7 @@ def main():
         features = boltz2.features(f)
 
         # 3. The model: the converted checkpoint, with upstream's sampler settings.
-        model = pretrained.boltz2()
+        model = pretrained.load("boltz2")
 
         # 4. Predict, keep the most confident sample (pLDDT per token: residues, and each
         #    of the ligand's atoms).

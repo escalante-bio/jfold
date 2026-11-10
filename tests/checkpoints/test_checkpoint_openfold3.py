@@ -23,9 +23,9 @@ KEY = jax.random.key(0)
 
 def _trunk(model, features):
     inputs = model.embed(features, key=KEY)
-    state = model.init_state(inputs)
+    state = model.trunk.init_state(inputs)
     for _ in range(NUM_RECYCLES):
-        state = model.step(features, inputs, state, key=KEY)
+        state = model.trunk(features, inputs, state, key=KEY)
     return inputs, state
 
 
@@ -95,8 +95,8 @@ def test_openfold3():
     )
 
     from jfold.convert import openfold3
-    from jfold.model import TrunkState
     from jfold.models import openfold3 as openfold3_features
+    from jfold.slots import TrunkState
 
     reference = _reference_model()
     batch = _featurize()
@@ -167,8 +167,8 @@ def test_openfold3():
     ref_inputs = type(inputs)(
         s_inputs=jnp.array(s_inputs.numpy()), s_init=inputs.s_init, z_init=inputs.z_init
     )
-    context = model.denoiser_context(features, ref_inputs, ref_state)
-    ours = model.denoise(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL), key=KEY)
+    context = model.diffusion.prepare(features, ref_inputs, ref_state)
+    ours = model.diffusion(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL))
     errors["denoised"] = rel_err(ours, denoised)
     conf = model.confidence_logits(
         features, ref_inputs, ref_state, jnp.array(denoised.numpy()), key=KEY
@@ -177,7 +177,7 @@ def test_openfold3():
     errors["pde"] = rel_err(conf.pde, aux["pde_logits"][0, 0])
     errors["plddt"] = rel_err(conf.plddt, aux["plddt_logits"][0, 0])
     errors["resolved"] = rel_err(conf.resolved, aux["experimentally_resolved_logits"][0, 0])
-    errors["distogram"] = rel_err(model.distogram_logits(ref_state), aux["distogram_logits"][0, 0])
+    errors["distogram"] = rel_err(model.distogram(ref_state.z), aux["distogram_logits"][0, 0])
     print(errors)
 
     assert errors["s_inputs"] < 1e-4

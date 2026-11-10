@@ -11,12 +11,11 @@ A saved model is a directory of two files:
   fields, plain values (numbers, strings, tuples, `null`), module-level functions by
   name (`jfold.sampling.core:masked_centering`), and each array's shape and dtype.
 
-Loading rebuilds the modules from the JSON and fills in the arrays by path. Nothing
-on disk is a JAX or pickled Python object, so it does not depend on JAX's internal
-types; it depends only on jfold's class and field names, and a mismatch is reported
-by name. A class that moves or is renamed keeps loading from older files through
-`MOVED`. Loading imports classes and functions from jfold and equinox only, unless the
-caller names more module prefixes (`namespaces`, e.g. another library's own modules).
+Loading rebuilds the modules from the JSON and fills in the arrays by path. A file
+depends only on jfold's class and field names (a mismatch is reported by name), and a
+class that moves or is renamed keeps loading from older files through `MOVED`. Loading
+imports classes and functions from jfold and equinox only, unless the caller names more
+module prefixes (`namespaces`, e.g. another library's own modules).
 """
 
 import dataclasses
@@ -38,8 +37,8 @@ FORMAT_VERSION = 1
 _STRUCTURE, _WEIGHTS = "model.json", "weights.safetensors"
 # Classes and functions a file may name, besides a caller's own `namespaces`.
 _NAMESPACES = ("jfold.", "equinox.")
-# Names older files use -> where those classes are now. Saving always writes the current
-# name; add an entry here when moving or renaming a class that saved models use.
+# Names in older files -> the classes' current names. Saving writes the current name; add
+# an entry when moving or renaming a class that saved models use.
 MOVED = {
     "jfold.blocks.confidence:SinglesToPair": "jfold.nn:SinglesToPair",
     "jfold.models.boltz2:TrunkMSA": "jfold.blocks.msa:ResidualMSA",

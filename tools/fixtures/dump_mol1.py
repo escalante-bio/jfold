@@ -2,8 +2,8 @@
 
 Runs Mol-1's inference featurizer (`mol.data.inference.infer_dataloader.InferenceDataset
 .process_one`, as `mol pred` and jfold's Mol-1 test call it, with templates off) on every
-system in `tests/featurize/data/systems.json` and saves `tests/featurize/data/mol1_<system>.npz` (numpy arrays
-only).
+system in `tests/featurize/data/systems.json` and saves
+`tests/featurize/data/mol1_<system>.npz` (numpy arrays only).
 
 Run from `~/jfold`:
 
@@ -11,12 +11,12 @@ Run from `~/jfold`:
 
 Needs the Mol-1 reference data (`common/components.cif` and
 `common/components.cif.rdkit_mol.pkl`) under `$MOL_ROOT_DIR` (default
-`~/.cache/jfold/mol1`, where `tests/test_checkpoint_mol1.py` downloads it).
+`~/.cache/jfold/mol1`, where `tests/checkpoints/test_checkpoint_mol1.py` downloads it).
 
 MSA: a chain with an `msa` passes the a3m as `proteinChain.unpairedMsaPath` and the
 dataset runs with `use_msa=True` (Mol-1's own way to give a precomputed unpaired MSA);
 systems without any MSA run with `use_msa=False`, Mol-1's single-sequence path (a dummy
-MSA built from `restype`). No pairing happens: no `pairedMsa`/`pairedMsaPath` is given.
+MSA built from `restype`). No `pairedMsa`/`pairedMsaPath` is given, so nothing is paired.
 
 Determinism: the only random step for protein-only inputs is the per-residue `ref_pos`
 augmentation (a translation from `np.random.uniform` and a rotation from scipy's

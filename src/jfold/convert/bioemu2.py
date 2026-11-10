@@ -38,7 +38,6 @@ from jfold.models.bioemu2 import (
     MethodConditioning,
     Readout,
     SingleConditioning,
-    SwiGLU,
     ZeroAdaLN,
     ZeroConditionedAttention,
     ZeroConditionedTransition,
@@ -50,6 +49,7 @@ from jfold.nn import (
     PairBias,
     ReluMLP,
     SinglesToPair,
+    SwiGLU,
     Transition,
     stack,
 )
@@ -150,8 +150,9 @@ def msa_module(m) -> MSAModule:
 
 
 def relative_positions(m) -> Linear:
-    """`FusedRelativePositionEncoder`, as a linear on `jfold.blocks.inputs.relative_position_features`
-    (whose blocks are one-hot residue, token and chain offsets around the same-entity flag)."""
+    """`FusedRelativePositionEncoder`, as a linear on
+    `jfold.blocks.inputs.relative_position_features` (whose blocks are one-hot residue,
+    token and chain offsets around the same-entity flag)."""
     return Linear(
         weight=jnp.concatenate(
             [

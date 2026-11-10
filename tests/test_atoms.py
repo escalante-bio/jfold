@@ -398,7 +398,6 @@ CASES = {
 
 @eqx.filter_jit
 def _forward(encoder, decoder, features, x: dict, mask, num_tokens):
-    key = jax.random.key(0)
     atoms = Atoms(features, x["ref_pos"], x["ref_space_uid"], x["atom_to_token"], mask)
     q, c, p = encoder.condition(atoms, x["s_trunk"], x["z_trunk"])
     a, q = encoder(
@@ -409,10 +408,9 @@ def _forward(encoder, decoder, features, x: dict, mask, num_tokens):
         mask,
         num_tokens,
         x["r"],
-        key=key,
     )
     biases = decoder.transformer.pair_biases(p)
-    r_update = decoder(x["a"], q, c, biases, x["atom_to_token"], mask, key=key)
+    r_update = decoder(x["a"], q, c, biases, x["atom_to_token"], mask)
     return a, r_update
 
 

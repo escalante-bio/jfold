@@ -43,7 +43,6 @@ from jfold.models.esmfold2 import (
     SlidingWindowAttention,
     SlidingWindowLayer,
     SlidingWindowTransformer,
-    SwiGLU,
     TrackedMSA,
     TrunkInit,
 )
@@ -54,6 +53,7 @@ from jfold.nn import (
     Linear,
     PairBias,
     SinglesToPair,
+    SwiGLU,
     Transition,
     stack,
 )

@@ -1,5 +1,5 @@
-"""End-to-end parity with released checkpoints: the trunk, one denoising step, confidence
-and distogram of each upstream model on a small real complex. Downloads weights; run with
+"""End-to-end parity with the released Protenix checkpoints: the trunk, one denoising step,
+confidence and distogram on a small real complex. Downloads weights; run with
 `pytest -m checkpoint`."""
 
 from pathlib import Path
@@ -22,15 +22,15 @@ KEY = jax.random.key(0)
 
 def _trunk(model, features):
     inputs = model.embed(features, key=KEY)
-    state = model.init_state(inputs)
+    state = model.trunk.init_state(inputs)
     for _ in range(NUM_RECYCLES):
-        state = model.step(features, inputs, state, key=KEY)
+        state = model.trunk(features, inputs, state, key=KEY)
     return inputs, state
 
 
 def _reference(name: str):
     """The released model as `jfold.pretrained` builds it (as `protenix predict` does), from
-    where `protenix predict` keeps its checkpoints (`~/.protenix` for the larger ones)."""
+    where that command keeps its checkpoints (`~/.protenix` for the larger ones)."""
     from jfold import pretrained
     from jfold.pretrained.recipes.protenix import NAMES, configs
 
@@ -49,8 +49,8 @@ def test_protenix(name):
     from protenix.data.template import ChainInput, featurize
 
     from jfold.convert import protenix
-    from jfold.model import TrunkState
     from jfold.models import protenix as protenix_features
+    from jfold.slots import TrunkState
 
     reference = _reference(name)
     feats, _, _ = featurize([ChainInput(s, compute_msa=False) for s in SEQUENCES])
@@ -90,8 +90,8 @@ def test_protenix(name):
     # Later stages from the reference trunk, so errors do not compound.
     ref_state = TrunkState(s=jnp.array(s.numpy()), z=jnp.array(z.numpy()))
     ref_inputs = jax.tree.map(lambda x: x, inputs)
-    context = model.denoiser_context(features, ref_inputs, ref_state)
-    ours = model.denoise(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL), key=KEY)
+    context = model.diffusion.prepare(features, ref_inputs, ref_state)
+    ours = model.diffusion(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL))
     assert rel_err(ours, denoised) < 1e-4
     conf = model.confidence_logits(
         features, ref_inputs, ref_state, jnp.array(denoised.numpy()), key=KEY
@@ -100,4 +100,4 @@ def test_protenix(name):
     assert rel_err(conf.pde, pde[0]) < 1e-3
     assert rel_err(conf.plddt, plddt[0]) < 1e-3
     assert rel_err(conf.resolved, resolved[0]) < 1e-3
-    assert rel_err(model.distogram_logits(ref_state), distogram) < 1e-4
+    assert rel_err(model.distogram(ref_state.z), distogram) < 1e-4

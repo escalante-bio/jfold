@@ -1,6 +1,6 @@
 """OpenFold3's features, as its inference featurization produces them for proteins (see
-`docs/upstream-featurization/openfold3.md`): the unbatched dict `jfold.models.openfold3.features` takes,
-plus upstream's `num_atoms_per_token`. Upstream's
+`docs/upstream-featurization/openfold3.md`): the unbatched dict
+`jfold.models.openfold3.features` takes, plus upstream's `num_atoms_per_token`. Upstream's
 quirks are reproduced: ids ranked by string sort, the query row twice, `.` as an aligned
 `X`, the (8/pi)-scaled deletion value and the scrambled profile.
 
@@ -265,8 +265,8 @@ def template_features(system: System) -> dict[str, np.ndarray]:
 
 
 def features(system: System, *, key=None) -> dict[str, np.ndarray]:
-    """The feature dict for `system`; `key` (a JAX PRNG key) draws the reference conformers
-    and their poses, `None` gives every residue conformer 0, unposed."""
+    """The feature dict for `system`; a JAX `key` draws the reference conformers and their
+    poses, `None` gives every residue conformer 0, unposed."""
     table = residues()
     chains = system.chains
 

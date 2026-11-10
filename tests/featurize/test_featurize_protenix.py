@@ -136,7 +136,7 @@ def test_template_length_must_match(model, name):
 
 
 def test_mol1_refuses_template_it_would_drop():
-    """Upstream drops (silently) a template with consecutive CAs over 150 Å apart."""
+    """Upstream silently drops a template with consecutive CAs over 150 Å apart."""
     atoms = tuple({"N": (x, 0, 0), "CA": (x + 1, 0, 0), "C": (x + 2, 0, 0)} for x in (0, 4, 200))
     chain = Chain("A", "AAAAA", template=Template("AAAAA", (*atoms, {}, {})))
     with pytest.raises(ValueError, match="150"):

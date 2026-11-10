@@ -4,10 +4,10 @@ Run from ~/jfold:
 
     uv run python tools/fixtures/dump_esmfold2.py
 
-For each system in tests/featurize/data/systems.json this writes tests/featurize/data/esmfold2_<system>.npz with
+For each system in tests/featurize/data/systems.json this writes
+tests/featurize/data/esmfold2_<system>.npz with
 
-* every tensor `ESMFold2InputBuilder.prepare_input` returns, unbatched (leading batch axis
-  dropped), in upstream's dtypes;
+* every tensor `ESMFold2InputBuilder.prepare_input` returns, unbatched, in upstream's dtypes;
 * the ESMC token inputs upstream's `compute_lm_hidden_states` builds from them, captured by
   running that function with a recording stand-in for ESMC (no weights):
   `lm_input_ids` [Lp], `lm_sequence_id` [Lp] and `lm_positions` [T] (each token's row in
@@ -21,11 +21,12 @@ For each system in tests/featurize/data/systems.json this writes tests/featurize
 `lm_hidden_states` is not included (it needs ESMC's weights).
 
 Featurization of standard-residue proteins draws no random numbers; `prepare_input` is
-called with seed=0 anyway, and the script checks that seed=None and another seed give
-identical arrays. The model-time randomness (MSA column masking and row subsampling,
-ESMC input masking, LM dropout) is not part of these features.
+called with seed=0, and the script checks that seed=None and another seed give identical
+arrays. The model-time randomness (MSA column masking and row subsampling, ESMC input
+masking, LM dropout) is not part of these features.
 
-The CCD pickle is `biohub/ESMFold2`'s ccd.pkl, resolved through the Hugging Face cache unless ESMCFOLD_CCD_PATH is set.
+The CCD pickle is `biohub/ESMFold2`'s ccd.pkl, resolved through the Hugging Face cache
+unless ESMCFOLD_CCD_PATH is set.
 """
 
 import hashlib
@@ -49,8 +50,8 @@ def chains_for(system: dict):
     for chain in system["chains"]:
         msa = None
         if "msa" in chain:
-            # A precomputed a3m: insertions stripped from the stored
-            # sequences, their counts kept in `MSA.deletions` (identical features either way).
+            # A precomputed a3m: insertions stripped from the stored sequences, their
+            # counts kept in `MSA.deletions` (identical features either way).
             msa = MSA.from_a3m(str(FIXTURES / chain["msa"]), remove_insertions=True)
         chains.append(ProteinInput(id=chain["id"], sequence=chain["sequence"], msa=msa))
     return chains

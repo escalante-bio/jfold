@@ -1,8 +1,7 @@
 """AtlasFold's Hugging Face checkpoints, as `atlasfold.pretrained.load_model` loads them,
 each converted to a `jfold.model.StructureModel` whose trunk holds its AtlasLM language model
-(`trunk.atlaslm`).
-AtlasLM-3B (`atlaslm_3b`) is a release of its own, stored once: a folding model's copy is
-saved without it and gets it back on loading.
+(`trunk.atlaslm`). AtlasLM-3B (`atlaslm_3b`) is a release of its own, stored once: a folding
+model's copy is saved without it and gets it back on loading.
 
 - `atlasfold`: AtlasFold (`SeonghwanSeo/atlasfold-260703`), monomers. Its runner masks 15%
   of the residues for AtlasLM every pass and samples 20 steps up to 512 residues (30 up
@@ -10,10 +9,7 @@ saved without it and gets it back on loading.
 - `atlasfold_m`: AtlasFold-M (`SeonghwanSeo/atlasfold-m-260725`), complexes, with a
   template module. Its runner masks 20% and samples 200 steps.
 - `atlaslm_3b`: AtlasLM-3B (`SeonghwanSeo/atlaslm-3b-base`), in bfloat16 upstream; its
-  converted weights are those values in float32.
-
-Code and weights are MIT-licensed (Copyright (c) 2026 Seonghwan Seo); every converted copy
-carries the notice (`LICENSE`)."""
+  converted weights are those values in float32."""
 
 from functools import partial
 from pathlib import Path
@@ -92,8 +88,7 @@ def _build(multimer: bool, checkpoint: Path):
 
 
 def _convert(name: str, m) -> eqx.Module:
-    """The folding model, without AtlasLM (converted once, as its own release, and attached
-    on loading)."""
+    """The folding model, without AtlasLM."""
     from atlasfold.model.network.diffusion_head import SamplingConfig
 
     from jfold.convert import atlasfold as convert

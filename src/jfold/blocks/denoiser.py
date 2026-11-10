@@ -1,20 +1,18 @@
 """The diffusion module (AF3 Algorithms 20 and 21): denoise atom positions given the trunk.
 
-`DiffusionModule.prepare` (from the features and the trunk's outputs; `context` from arrays)
-does everything that depends only on the trunk and the reference conformers, once;
-`DiffusionModule.__call__` is one denoising step. Inputs are unbatched: tokens `[T, ...]`
-and atoms `[N, ...]`, with masks that are False for padding."""
+`DiffusionModule.prepare` (or `context`, from arrays) computes what depends only on the
+trunk and the reference conformers, once; `__call__` is one denoising step. Inputs are
+unbatched: tokens `[T, ...]` and atoms `[N, ...]`, with masks that are False for padding."""
 
 import equinox as eqx
 import jax.numpy as jnp
 from equinox.nn import Identity
-from jaxtyping import Array, Bool, Float, PRNGKeyArray
+from jaxtyping import Array, Bool, Float
 
 from jfold.blocks.atoms import AtomAttentionDecoder, AtomAttentionEncoder, Atoms
 from jfold.blocks.diffusion import DiffusionTransformer
-from jfold.model import Features, TrunkInputs, TrunkState
-from jfold.nn import LayerNorm, Linear, Transition, split_key
-from jfold.slots import AbstractDiffusionModule
+from jfold.nn import LayerNorm, Linear, Transition
+from jfold.slots import AbstractDiffusionModule, Features, TrunkInputs, TrunkState
 
 
 class FourierEmbedding(eqx.Module):
@@ -81,12 +79,11 @@ class DiffusionContext(eqx.Module):
 
     @property
     def atom_mask(self) -> Bool[Array, " N"]:
-        """The atoms the denoiser moves (real, not padding): what a sampler centres and
-        aligns on."""
+        """The real (not padding) atoms: what a sampler centres and aligns on."""
         return self.atoms.mask
 
 
-class DiffusionModule(AbstractDiffusionModule):
+class DiffusionModule(AbstractDiffusionModule[Features]):
     """AF3 Algorithm 20, with EDM preconditioning."""
 
     conditioning: DiffusionConditioning
@@ -145,11 +142,8 @@ class DiffusionModule(AbstractDiffusionModule):
         context: DiffusionContext,
         x_noisy: Float[Array, "N 3"],
         t: Float[Array, ""],
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> Float[Array, "N 3"]:
         """The denoised positions at noise level `t`."""
-        k_encoder, k_transformer, k_decoder = split_key(key, 3)
         atoms, sigma_data = context.atoms, self.sigma_data
         s = self.conditioning.single(context.s_trunk, context.s_inputs, t)
         r = x_noisy / jnp.sqrt(t**2 + sigma_data**2)
@@ -161,10 +155,9 @@ class DiffusionModule(AbstractDiffusionModule):
             atoms.mask,
             context.token_mask.shape[0],
             r,
-            key=k_encoder,
         )
         a = a + self.linear_s(self.norm_s(s))
-        a = self.transformer(a, s, context.token_biases, context.token_mask, key=k_transformer)
+        a = self.transformer(a, s, context.token_biases, context.token_mask)
         r_update = self.decoder(
             self.norm_a(a),
             q,
@@ -172,7 +165,6 @@ class DiffusionModule(AbstractDiffusionModule):
             context.decoder_biases,
             atoms.atom_to_token,
             atoms.mask,
-            key=k_decoder,
         )
         scale = sigma_data**2 + t**2
         return sigma_data**2 / scale * x_noisy + sigma_data * t / jnp.sqrt(scale) * r_update

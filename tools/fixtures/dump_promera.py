@@ -4,23 +4,23 @@ Run from ~/jfold:
 
     uv run python tools/fixtures/dump_promera.py
 
-For each system in `tests/featurize/data/systems.json` this featurizes exactly as ProMERA's
+For each system in `tests/featurize/data/systems.json` this featurizes as ProMERA's
 inference does (`promera.inference.cofolding.Cofolding.__getitem__`): tinyprot
 `Structure.from_schema`, MSAs from an `msa_dir` via `load_msa_from_dir`,
 `construct_paired_msa`, `AF3Featurizer(...).featurize(compute_frames=True)`,
 `promera.inference.utils.finalize_feats`, then `promera.data.utils.collate` on a batch of
-one. The saved dict is that batch with the batch axis removed, i.e. what
+one. The saved dict is that batch without the batch axis, which
 `jfold.models.promera.features` takes. Output: `tests/featurize/data/promera_<system>.npz`.
 
-Precomputed MSAs go through ProMERA's own mechanism: a private, temporary `msa_dir` in
-which each chain's a3m is stored as `<sha256(sequence + "\\n")>.a3m`. Chains without an
-a3m miss the lookup and get tinyprot's single-row dummy MSA. Using a temporary directory
-keeps any MSAs cached in `~/.cache/tinyprot/msa` out of the fixtures.
+Precomputed MSAs go through ProMERA's own mechanism: a temporary `msa_dir` in which each
+chain's a3m is stored as `<sha256(sequence + "\\n")>.a3m`. Chains without an a3m miss the
+lookup and get tinyprot's single-row dummy MSA. The temporary directory keeps MSAs cached
+in `~/.cache/tinyprot/msa` out of the fixtures.
 
 Determinism: the only random step is the reference conformer (`tinyprot.ccd._get_conformer`):
 each residue's centred CCD ideal coordinates get a N(0, 1) translation and then a uniform
-random rotation, both from numpy's global RNG. The global RNG is seeded with `SEED` before each
-system. The script also records each residue's draws and stores them next to the features:
+random rotation, both from numpy's global RNG, which is seeded with `SEED` before each
+system. The script records each residue's draws and stores them next to the features:
 
     aux_ref_pos_canonical  [A, 3]    float32  centred CCD ideal coordinates (no jitter/rotation),
                                               padded like ref_pos

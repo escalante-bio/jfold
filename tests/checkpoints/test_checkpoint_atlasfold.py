@@ -113,7 +113,7 @@ def test_atlasfold(name):
     @eqx.filter_jit
     def trunk(model, features, masks):
         inputs = model.embed(features)
-        state = model.init_state(inputs)
+        state = model.trunk.init_state(inputs)
         for mask_rows in masks:
             state = model.trunk.masked(features, inputs, state, mask_rows)
         return inputs, state
@@ -131,10 +131,10 @@ def test_atlasfold(name):
 
     @eqx.filter_jit
     def heads(model, features, inputs, state, x_noisy, denoised):
-        context = model.denoiser_context(features, inputs, state)
-        ours = model.denoise(context, x_noisy, jnp.array(NOISE_LEVEL))
+        context = model.diffusion.prepare(features, inputs, state)
+        ours = model.diffusion(context, x_noisy, jnp.array(NOISE_LEVEL))
         conf = model.confidence_logits(features, inputs, state, denoised)
-        return ours, conf, model.distogram_logits(state)
+        return ours, conf, model.distogram(state.z)
 
     ours, conf, distogram = heads(
         model,

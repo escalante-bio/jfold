@@ -1,7 +1,7 @@
 """BioEmu2's features, as `bioemu2`'s featurization produces them for proteins (see
 `docs/upstream-featurization/bioemu2.md`): the dict `jfold.models.bioemu2.features` takes.
 
-Nothing here is random: reference conformers are the CCD ideal coordinates, unposed."""
+Deterministic: reference conformers are the CCD ideal coordinates, unposed."""
 
 import numpy as np
 
@@ -90,7 +90,6 @@ def features(
     order = chain_order(system)
     chains = [system.chains[i] for i, _, _ in order]
 
-    # Tokens.
     res_type, asym_id, entity_id, sym_id = [], [], [], []
     for asym, (chain, (_, entity, copy)) in enumerate(zip(chains, order, strict=True)):
         res_type += [TOKEN[c] for c in chain.sequence]
@@ -161,5 +160,5 @@ def features(
 
 
 def atom_sites(system: System) -> AtomSites:
-    """What each real atom of `features(system)` is (chains in BioEmu2's (entity-grouped) order)."""
+    """What each real atom of `features(system)` is (chains in BioEmu2's entity-grouped order)."""
     return _atom_sites([system.chains[i] for i, _, _ in chain_order(system)], residues())

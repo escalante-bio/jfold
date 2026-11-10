@@ -16,6 +16,7 @@ from reference import (
     assert_finite,
     assert_round_trip,
     assert_schedule,
+    block_features,
     mask,
     pad,
     randomize,
@@ -25,8 +26,8 @@ from reference import (
 from jfold.blocks.atoms import Atoms
 from jfold.blocks.inputs import relative_position_features
 from jfold.convert import esmfold2 as convert
-from jfold.model import TrunkState
 from jfold.models import esmfold2
+from jfold.slots import TrunkInputs, TrunkState
 
 NUM_TOKENS = 7
 NUM_ATOMS = 23
@@ -214,7 +215,7 @@ def test_diffusion_transformer():
     token_mask = mask(NUM_TOKENS, PADDING)
 
     def f(t, a, s, z, mask):
-        return t(a, s, t.pair_biases(z), mask, key=KEY)
+        return t(a, s, t.pair_biases(z), mask)
 
     args = (transformer, a_in, s_in, z_in, token_mask)
     out = _call(f, *args)
@@ -355,7 +356,7 @@ def test_sliding_window_transformer(num_atoms):
     mask_in = atom_mask[order]
 
     def f(t, q, c, pos, uid, mask):
-        return t(q, t.modulations(c), t.rope(pos, uid), mask, key=KEY)
+        return t(q, t.modulations(c), t.rope(pos, uid), mask)
 
     args = (transformer, q_in, c_in, pos_in, uid_in, mask_in)
     out = _call(f, *args)
@@ -402,7 +403,9 @@ def test_input_embedder():
         jnp.array(pad(deletion_mean.numpy(), PADDING, axes=(0,))),
         jnp.array(token_mask),
     )
-    f = lambda e, atoms, tf: e.embed(atoms, tf, key=KEY)
+    f = lambda e, atoms, tf: e(
+        block_features(tf.shape[0], atoms.mask.shape[0], atoms=atoms, token_features=tf)
+    )
     args = (embedder, atoms_in, token_features)
     out = _call(f, *args)
     _check(out[:NUM_TOKENS], ref)
@@ -468,8 +471,9 @@ def test_diffusion_module():
     token_mask = mask(NUM_TOKENS, PADDING)
 
     def f(module, x, atoms, s, z, rel, mask):
-        context = module.context(atoms, s, z, rel, mask)
-        return module(context, x, jnp.array(t), key=KEY)
+        features = block_features(mask.shape[0], atoms.mask.shape[0], atoms=atoms, token_mask=mask)
+        context = module.prepare(features, _trunk_inputs(s, z, rel), TrunkState(s=s, z=z))
+        return module(context, x, jnp.array(t))
 
     args = (module, x_in, atoms_in, s_in, z_in, rel_in, token_mask)
     out = _call(f, *args)
@@ -478,6 +482,33 @@ def test_diffusion_module():
 
 
 # --- Confidence ----------------------------------------------------------------------------
+
+
+def _trunk_inputs(s_inputs, z, relative_positions) -> TrunkInputs:
+    """Trunk inputs carrying only what the diffusion and confidence modules read."""
+    extras = esmfold2.TrunkExtras(
+        relative_positions=relative_positions,
+        bonds=jnp.zeros_like(relative_positions),
+        lm_pair=None,
+        msa_features=None,
+        msa_mask=None,
+    )
+    return TrunkInputs(s_inputs=s_inputs, s_init=s_inputs, z_init=z, extras=extras)
+
+
+def _confidence(module, s_inputs, z, rep_coords, atom_to_token, atom_position, mask, pair_features):
+    """The confidence logits, the structure given as each token's representative atom."""
+    num_tokens = mask.shape[0]
+    features = block_features(
+        num_tokens,
+        atom_to_token.shape[0],
+        token_mask=mask,
+        rep_atom=jnp.arange(num_tokens),
+        atom_position=atom_position,
+    )
+    features = eqx.tree_at(lambda f: f.atoms.atom_to_token, features, atom_to_token)
+    inputs = _trunk_inputs(s_inputs, z, pair_features)
+    return module(features, inputs, TrunkState(s=s_inputs, z=z), rep_coords, key=KEY)
 
 
 def test_confidence():
@@ -537,7 +568,7 @@ def test_confidence():
     pos_in = np.concatenate([position, [0] * PADDING])
 
     def f(module, s, z, rep, a2t, pos, mask, pf):
-        out = module.logits(s, z, rep, a2t, pos, mask, pf, key=KEY)
+        out = _confidence(module, s, z, rep, a2t, pos, mask, pf)
         return out.pae, out.pde, out.plddt, out.resolved
 
     args = (module, s_in, z_in, rep_in, a2t, pos_in, token_mask, pf_in)
@@ -787,7 +818,7 @@ def test_experimental_confidence(padding):
     pos_in = np.concatenate([position, np.zeros(padding, int)])
 
     def f(module, s, z, rep, a2t, pos, mask, pf):
-        out = module.logits(s, z, rep, a2t, pos, mask, pf, key=KEY)
+        out = _confidence(module, s, z, rep, a2t, pos, mask, pf)
         return out.pae, out.plddt
 
     args = (module, s_in, z_in, rep_in, a2t, pos_in, token_mask, pf_in)
@@ -1040,15 +1071,15 @@ def _run(model, features, z0, x_noisy, coords, t, z_trunk=None):
     inputs = model.embed(features, key=KEY)
     state = TrunkState(s=inputs.s_init, z=z0)
     for _ in range(NUM_LOOPS):
-        state = model.step(features, inputs, state, key=KEY)
-    state = model.finish(features, state, key=KEY)
+        state = model.trunk(features, inputs, state, key=KEY)
+    state = model.trunk.finish(features, state, key=KEY)
     used = state if z_trunk is None else TrunkState(s=state.s, z=z_trunk)
-    context = model.denoiser_context(features, inputs, used)
-    denoised = model.denoise(context, x_noisy, jnp.array(t), key=KEY)
+    context = model.diffusion.prepare(features, inputs, used)
+    denoised = model.diffusion(context, x_noisy, jnp.array(t))
     conf = None
-    if model.has_confidence:
+    if model.confidence is not None:
         conf = model.confidence_logits(features, inputs, used, coords, key=KEY)
-    return inputs, state.z, model.distogram_logits(state), denoised, conf
+    return inputs, state.z, model.distogram(state.z), denoised, conf
 
 
 @pytest.mark.parametrize("padding", [0, PADDING], ids=["unpadded", "padded"])
@@ -1119,7 +1150,7 @@ def _check_experimental(m, f, out, seen, padding, gen, tol=1e-5, **feature_kwarg
 
 def _run_from_init(model, features, x_noisy, coords, t, z_trunk=None):
     inputs = model.embed(features, key=KEY)
-    return _run(model, features, model.init_state(inputs, key=KEY).z, x_noisy, coords, t, z_trunk)
+    return _run(model, features, model.trunk.init_state(inputs, key=KEY).z, x_noisy, coords, t, z_trunk)
 
 
 def _column_mask_rate(model, rate: float):
@@ -1393,10 +1424,10 @@ def test_run_trunk(experimental):
     def by_hand(model, features, key):
         k_embed, k_init, k_passes, k_finish = jax.random.split(key, 4)
         inputs = model.embed(features, key=k_embed)
-        state = model.init_state(inputs, key=k_init)
+        state = model.trunk.init_state(inputs, key=k_init)
         for k in jax.random.split(k_passes, NUM_LOOPS):
-            state = model.step(features, inputs, state, key=k)
-        return inputs, model.finish(features, state, key=k_finish)
+            state = model.trunk(features, inputs, state, key=k)
+        return inputs, model.trunk.finish(features, state, key=k_finish)
 
     run = eqx.filter_jit(lambda m, f, k: m.run_trunk(f, num_passes=NUM_LOOPS, key=k))
     (inputs, z), (inputs_ref, z_ref) = (

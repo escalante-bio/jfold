@@ -17,11 +17,10 @@ residue offsets and, within a residue, the residue type's ideal atom offsets and
 
 The rest runs on the shared blocks: Pairformer and template layers, the diffusion
 conditioning and transformers, the confidence Pairformer and heads. A converted model is a
-`jfold.model.StructureModel` reading `AtlasFoldFeatures`: `ResidueEmbedder` (`s_inputs` are
-the residue probabilities), `ResidueTrunkInit`, `AtlasFoldTrunk` (holding AtlasLM),
-`DiffusionModule`, and `MultimerConfidence` or `MonomerConfidence`. Positions are atom14
-slots, `[14 T, 3]` (`atom14` reshapes them). Inputs are unbatched, with masks that are False
-for padding."""
+`jfold.model.StructureModel` reading `AtlasFoldFeatures`: `ResidueEmbedder`,
+`ResidueTrunkInit`, `AtlasFoldTrunk` (holding AtlasLM), `DiffusionModule`, and
+`MultimerConfidence` or `MonomerConfidence`. Inputs are unbatched, with masks that are
+False for padding."""
 
 import equinox as eqx
 import jax
@@ -32,7 +31,6 @@ from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from jfold.blocks.atoms import mean_atoms_to_tokens
 from jfold.blocks.confidence import (
-    ConfidenceLogits,
     ConfidenceModule,
     DistanceEmbedding,
     PairHead,
@@ -45,16 +43,28 @@ from jfold.blocks.inputs import TrunkInit, probabilities, relative_position_feat
 from jfold.blocks.pairformer import AbstractPairformer, PairformerLayer, PairformerStack
 from jfold.blocks.templates import TemplateEmbedder
 from jfold.blocks.windows import CenteredWindows
-from jfold.model import Recycle, TrunkInputs, TrunkState
+from jfold.model import Recycle
 from jfold.models.common import arrays
 from jfold.models.esmfold2 import ESMCLayer, _rotate
-from jfold.nn import Dropout, LayerNorm, Linear, SinglesToPair, scan_layers, split_key
+from jfold.nn import (
+    Dropout,
+    LayerNorm,
+    Linear,
+    NormLinear,
+    ReluMLP2,
+    SinglesToPair,
+    scan_layers,
+    split_key,
+)
 from jfold.slots import (
     AbstractConfidenceModule,
     AbstractDiffusionModule,
     AbstractInputEmbedder,
     AbstractTrunk,
     AbstractTrunkInit,
+    ConfidenceLogits,
+    TrunkInputs,
+    TrunkState,
 )
 
 NUM_CLASSES = 21  # ARNDCQEGHILKMFPSTWYV, then X
@@ -87,7 +97,7 @@ class LMInputs(eqx.Module):
 
 
 class AtlasFoldFeatures(eqx.Module):
-    """A system's inputs in AtlasFold's vocabulary. Masks are False for padding."""
+    """A system's inputs in AtlasFold's vocabulary."""
 
     residues: Float[Array, "T 21"]  # residue probabilities (one-hot for a fixed sequence)
     relative_positions: Float[Array, "T T 73"]  # `relative_positions`
@@ -175,26 +185,6 @@ class AtlasLM(eqx.Module):
 
 
 # The trunk
-
-
-class ReluMLP2(eqx.Module):
-    """`linear_out(relu(linear_in(x)))`."""
-
-    linear_in: Linear
-    linear_out: Linear
-
-    def __call__(self, x: Float[Array, "... d"]) -> Float[Array, "... e"]:
-        return self.linear_out(jax.nn.relu(self.linear_in(x)))
-
-
-class NormLinear(eqx.Module):
-    """`linear(norm(x))`."""
-
-    norm: LayerNorm
-    linear: Linear
-
-    def __call__(self, x: Float[Array, "... d"]) -> Float[Array, "... e"]:
-        return self.linear(self.norm(x))
 
 
 class LMLayer(eqx.Module):
@@ -305,7 +295,7 @@ class AtlasFoldPairformer(AbstractPairformer):
         return self.full(s, z, mask, key=k_full)
 
 
-class AtlasFoldTrunk(AbstractTrunk):
+class AtlasFoldTrunk(AbstractTrunk[AtlasFoldFeatures]):
     """The trunk, from zeros. One pass: recycle the previous single and pair, add the
     language model's (AtlasLM reading the sequence with `mlm_rate` of its residues masked,
     drawn afresh every pass), add templates, run the Pairformer."""
@@ -315,13 +305,12 @@ class AtlasFoldTrunk(AbstractTrunk):
     language_model: LanguageModelEmbedder
     pairformer: AtlasFoldPairformer
     templates: TemplateEmbedder | None = None
-    # AtlasLM. None only as stored: `jfold.pretrained` attaches the shared AtlasLM on
-    # loading (`jfold.pretrained.recipes.atlasfold`).
+    # None only as stored: `jfold.pretrained` attaches the shared AtlasLM on loading
+    # (`jfold.pretrained.recipes.atlasfold`).
     atlaslm: AtlasLM | None = None
     mlm_rate: float = eqx.field(static=True, default=0.15)
 
     def init_state(self, inputs: TrunkInputs, *, key: PRNGKeyArray | None = None) -> TrunkState:
-        del key
         return TrunkState(s=jnp.zeros_like(inputs.s_init), z=jnp.zeros_like(inputs.z_init))
 
     def __call__(
@@ -498,14 +487,12 @@ class AtomTransformer(eqx.Module):
         c: Float[Array, "N Ca"],
         biases: Float[Array, "layers heads NW Q K"],
         mask: Bool[Array, " N"],
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> Float[Array, "N Ca"]:
-        def step(layer_and_bias, a, k):
+        def step(layer_and_bias, a, key):
             layer, bias = layer_and_bias
-            return layer(a, c, bias, mask, key=k)
+            return layer(a, c, bias, mask)
 
-        return scan_layers(step, a, (self.layers, biases), key=key)
+        return scan_layers(step, a, (self.layers, biases))
 
 
 class AtomEncoder(eqx.Module):
@@ -526,10 +513,8 @@ class AtomEncoder(eqx.Module):
         r: Float[Array, "N 3"],
         biases: Float[Array, "layers heads NW Q K"],
         mask: Bool[Array, " N"],
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> tuple[Float[Array, "T Ct"], Float[Array, "N Ca"]]:
-        q = self.transformer(c + self.linear_r(r), c, biases, mask, key=key)
+        q = self.transformer(c + self.linear_r(r), c, biases, mask)
         a = jax.nn.relu(self.linear_token(q))
         num_tokens = mask.shape[0] // ATOMS
         atom_to_token = jnp.repeat(jnp.arange(num_tokens), ATOMS)
@@ -552,11 +537,9 @@ class AtomDecoder(eqx.Module):
         c: Float[Array, "N Ca"],
         biases: Float[Array, "layers heads NW Q K"],
         mask: Bool[Array, " N"],
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> Float[Array, "N 3"]:
         q = q + self.project_a(a).reshape(q.shape)
-        q = self.transformer(q, c, biases, mask, key=key)
+        q = self.transformer(q, c, biases, mask)
         return self.linear_out(self.norm_out(q))
 
 
@@ -573,7 +556,7 @@ class DiffusionContext(eqx.Module):
     decoder_biases: Float[Array, "Ld heads NW Q K"]
 
 
-class DiffusionModule(AbstractDiffusionModule):
+class DiffusionModule(AbstractDiffusionModule[AtlasFoldFeatures]):
     """AF3 Algorithm 20 on atom14 slots, with EDM preconditioning."""
 
     conditioning: DiffusionConditioning
@@ -610,17 +593,14 @@ class DiffusionModule(AbstractDiffusionModule):
         context: DiffusionContext,
         x_noisy: Float[Array, "N 3"],
         t: Float[Array, ""],
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> Float[Array, "N 3"]:
-        k_encoder, k_transformer, k_decoder = split_key(key, 3)
         sigma_data, mask, c = self.sigma_data, context.atom_mask, context.atom_single
         s = self.conditioning.single(context.s_trunk, context.residues, t)
         r = x_noisy / jnp.sqrt(t**2 + sigma_data**2)
-        a, q = self.encoder(c, r, context.encoder_biases, mask, key=k_encoder)
+        a, q = self.encoder(c, r, context.encoder_biases, mask)
         a = a + self.project_s(s)
-        a = self.transformer(a, s, context.token_biases, context.token_mask, key=k_transformer)
-        r_update = self.decoder(a, q, c, context.decoder_biases, mask, key=k_decoder)
+        a = self.transformer(a, s, context.token_biases, context.token_mask)
+        r_update = self.decoder(a, q, c, context.decoder_biases, mask)
         scale = sigma_data**2 + t**2
         return sigma_data**2 / scale * x_noisy + sigma_data * t / jnp.sqrt(scale) * r_update
 
@@ -633,7 +613,7 @@ def _rep_coords(features: AtlasFoldFeatures, coords: Float[Array, "N 3"]) -> Flo
     return atom14(coords)[jnp.arange(features.pseudo_beta.shape[0]), features.pseudo_beta]
 
 
-class MultimerConfidence(AbstractConfidenceModule):
+class MultimerConfidence(AbstractConfidenceModule[AtlasFoldFeatures]):
     """AtlasFold-M's confidence head: AF3's (`ConfidenceModule`, on the residue types and
     the pseudo-beta distances) with the trunk single projected first."""
 
@@ -663,7 +643,7 @@ class MultimerConfidence(AbstractConfidenceModule):
         )
 
 
-class MonomerConfidence(AbstractConfidenceModule):
+class MonomerConfidence(AbstractConfidenceModule[AtlasFoldFeatures]):
     """AtlasFold's confidence head: the pair conditioned on the residue types and the
     pseudo-beta distances, then one Pairformer for the single (pLDDT, resolved) and a
     pair-only one for the pair (PAE)."""
@@ -702,17 +682,14 @@ class MonomerConfidence(AbstractConfidenceModule):
 # Inputs
 
 
-class ResidueEmbedder(AbstractInputEmbedder):
+class ResidueEmbedder(AbstractInputEmbedder[AtlasFoldFeatures]):
     """`s_inputs`: the residue probabilities, as they are."""
 
-    def __call__(
-        self, features: AtlasFoldFeatures, *, key: PRNGKeyArray | None = None
-    ) -> Float[Array, "T 21"]:
-        del key
+    def __call__(self, features: AtlasFoldFeatures) -> Float[Array, "T 21"]:
         return features.residues
 
 
-class ResidueTrunkInit(AbstractTrunkInit):
+class ResidueTrunkInit(AbstractTrunkInit[AtlasFoldFeatures]):
     """The initial single and pair from the residue probabilities and the relative
     positions (`TrunkInit.initial`; AtlasFold has no bond features)."""
 
@@ -725,7 +702,6 @@ class ResidueTrunkInit(AbstractTrunkInit):
         *,
         key: PRNGKeyArray | None = None,
     ) -> TrunkInputs:
-        del key
         s_init, z_init = self.init.initial(s_inputs, features.relative_positions)
         return TrunkInputs(s_inputs=s_inputs, s_init=s_init, z_init=z_init)
 
@@ -741,8 +717,8 @@ def atom14(coords: Float[Array, "N 3"]) -> Float[Array, "T 14 3"]:
 def features(f: dict) -> AtlasFoldFeatures:
     """`AtlasFoldFeatures` from an AtlasFold feature dict (`atlasfold.common.featurize`'s
     keys, unbatched; `template.*` optional). `aatype` (`[T, 21]`) may be any probability
-    vectors, e.g. a soft sequence: they reach AtlasLM too, in its residue rows. Traceable:
-    any of the arrays may be traced under `jit`."""
+    vectors, e.g. a soft sequence: they reach AtlasLM too, in its residue rows. Any of the
+    arrays may be traced under `jit`."""
     a = arrays(f)
     token_mask = a["seq_mask"].astype(bool)
     residues = probabilities(a["aatype"], NUM_CLASSES)

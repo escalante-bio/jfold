@@ -1,6 +1,5 @@
 """`jfold.pretrained.load`: converts a release once, then loads the saved copy."""
 
-import inspect
 import json
 
 import jax.numpy as jnp
@@ -110,20 +109,3 @@ def test_unreadable_copy_is_fetched_again(tmp_path, monkeypatch):
     with pytest.warns(UserWarning, match="no longer exists"):
         model = pretrained.load("toy", cache=tmp_path / "cache")
     assert jnp.array_equal(model.weight, 2 * jnp.ones((2, 3))) and not calls
-
-
-def test_every_release_has_its_function(monkeypatch):
-    """Each released model has a function of its name in `jfold.pretrained`, which loads that
-    release (passing `load`'s options on), and every other public function is the API."""
-    api = {"cache_dir", "releases", "checkpoint", "upstream", "load", "save", "upload"}
-    functions = {
-        name
-        for name, f in inspect.getmembers(pretrained, inspect.isfunction)
-        if f.__module__ == pretrained.__name__ and not name.startswith("_")
-    }
-    assert functions - api == set(pretrained.releases())
-    calls = []
-    monkeypatch.setattr(pretrained, "load", lambda name, **options: calls.append((name, options)))
-    for name in pretrained.releases():
-        getattr(pretrained, name)(hub=False)
-    assert calls == [(name, {"hub": False}) for name in pretrained.releases()]

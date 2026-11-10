@@ -25,7 +25,7 @@ KEY = jax.random.key(0)
 
 def _biotite_compat():
     """OpenDDE's featurizer reaches into `BondList` internals that biotite 1.7 (a compiled
-    extension) no longer exposes; restore the few it uses."""
+    extension) does not expose; restore the few it uses."""
     import biotite.structure as struc
 
     bonds = struc.BondList
@@ -60,8 +60,8 @@ def _configs():
 
 def _reference_model(configs):
     """The released model as `jfold.pretrained` builds it (as OpenDDE's inference runner
-    does), from where that runner keeps its checkpoint (downloaded, with the CCD data the
-    featurizer reads, if missing)."""
+    does), from that runner's checkpoint path. Downloads the checkpoint and the featurizer's
+    CCD data if missing."""
     from opendde.utils.download import download_inference_cache, resolve_checkpoint_path
 
     from jfold import pretrained
@@ -129,9 +129,9 @@ def _pad_structural(features, num: int, seed: int = 0):
 
 def _trunk(model, features):
     inputs = model.embed(features, key=KEY)
-    state = model.init_state(inputs)
+    state = model.trunk.init_state(inputs)
     for _ in range(NUM_RECYCLES):
-        state = model.step(features, inputs, state, key=KEY)
+        state = model.trunk(features, inputs, state, key=KEY)
     return inputs, state
 
 
@@ -139,8 +139,8 @@ def test_opendde():
     from opendde.model.opendde import update_input_feature_dict
 
     from jfold.convert import opendde as convert
-    from jfold.model import TrunkState
     from jfold.models import opendde
+    from jfold.slots import TrunkState
 
     configs = _configs()
     reference = _reference_model(configs)
@@ -199,13 +199,13 @@ def test_opendde():
         "structural s": rel_err(ours_structural.s, s_st),
         "structural z": rel_err(ours_structural.z, z_st),
     }
-    context = eqx.filter_jit(type(model).denoiser_context)(model, features, ref_inputs, ref_state)
-    ours = model.denoise(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL), key=KEY)
+    context = eqx.filter_jit(lambda m, *a: m.diffusion.prepare(*a))(model, features, ref_inputs, ref_state)
+    ours = model.diffusion(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL))
     errors["denoised"] = rel_err(ours, denoised)
     # Masked structural tokens change nothing.
     padded = _pad_structural(features, 9)
-    context = eqx.filter_jit(type(model).denoiser_context)(model, padded, ref_inputs, ref_state)
-    padded_out = model.denoise(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL), key=KEY)
+    context = eqx.filter_jit(lambda m, *a: m.diffusion.prepare(*a))(model, padded, ref_inputs, ref_state)
+    padded_out = model.diffusion(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL))
     errors["denoised, padded"] = rel_err(padded_out, denoised)
     conf = model.confidence_logits(
         features, ref_inputs, ref_state, jnp.array(denoised.numpy()), key=KEY
@@ -215,7 +215,7 @@ def test_opendde():
         "pde": rel_err(conf.pde, pde[0]),
         "plddt": rel_err(conf.plddt, plddt[0]),
         "resolved": rel_err(conf.resolved, resolved[0]),
-        "distogram": rel_err(model.distogram_logits(ref_state), distogram),
+        "distogram": rel_err(model.distogram(ref_state.z), distogram),
     }
     print(errors)
     tolerances = {"s_inputs": 1e-4, "denoised": 1e-4, "denoised, padded": 1e-4, "distogram": 1e-4}

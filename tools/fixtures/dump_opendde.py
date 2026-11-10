@@ -1,10 +1,10 @@
 """Upstream OpenDDE feature dicts for the shared fixture systems.
 
 Runs OpenDDE's inference featurizer (`opendde.data.inference.infer_dataloader
-.InferenceDataset.process_one`, what `get_inference_dataloader` calls per entry, as
-OpenDDE's inference runner and jfold's OpenDDE test use it) with the
-`opendde_v1` inference config, templates off, on every system in
-`tests/featurize/data/systems.json`, and saves `tests/featurize/data/opendde_<system>.npz` (numpy arrays only).
+.InferenceDataset.process_one`, which `get_inference_dataloader` calls per entry, as in
+OpenDDE's inference runner and jfold's OpenDDE test) with the `opendde_v1` inference config,
+templates off, on every system in `tests/featurize/data/systems.json`, and saves
+`tests/featurize/data/opendde_<system>.npz` (numpy arrays only).
 
 Run from `~/jfold`:
 
@@ -12,12 +12,11 @@ Run from `~/jfold`:
 
 Needs OpenDDE's CCD data (`configs.data.ccd_components_file` and its RDKit pickle,
 `~/.cache/opendde/common/` by default; `opendde.utils.download.download_inference_cache`
-fetches them, as `tests/test_checkpoint_opendde.py` does).
+fetches them, as `tests/checkpoints/test_checkpoint_opendde.py` does).
 
 MSA: a chain with an `msa` passes the a3m as `proteinChain.unpairedMsaPath` and the
-config runs with `use_msa=True`; systems without any MSA run
-with `use_msa=False` (OpenDDE's single-sequence path, a dummy MSA from `restype`), as
-jfold's test does.
+config runs with `use_msa=True`; systems without any MSA run with `use_msa=False`
+(OpenDDE's single-sequence path, a dummy MSA from `restype`), as jfold's test does.
 
 Determinism: the per-residue `ref_pos` augmentation draws from numpy's global RNG
 (`np.random.uniform` translation, scipy `Rotation.random()` rotation). numpy, `random`
@@ -49,7 +48,7 @@ FIXTURES = HERE.parents[1] / "tests" / "featurize" / "data"
 
 def biotite_compat():
     """OpenDDE's featurizer reaches into `BondList` internals that biotite 1.7 (a compiled
-    extension) no longer exposes; restore the few it uses (as jfold's OpenDDE test does)."""
+    extension) does not expose; restore the few it uses (as jfold's OpenDDE test does)."""
     import biotite.structure as struc
 
     bonds = struc.BondList

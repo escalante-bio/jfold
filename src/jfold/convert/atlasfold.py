@@ -50,13 +50,20 @@ from jfold.models.atlasfold import (
     LMLayer,
     MonomerConfidence,
     MultimerConfidence,
-    NormLinear,
-    ReluMLP2,
     ResidueEmbedder,
     ResidueTrunkInit,
 )
 from jfold.models.esmfold2 import ESMCLayer
-from jfold.nn import Attention, Linear, PairBias, SinglesToPair, Transition, stack
+from jfold.nn import (
+    Attention,
+    Linear,
+    NormLinear,
+    PairBias,
+    ReluMLP2,
+    SinglesToPair,
+    Transition,
+    stack,
+)
 from jfold.sampling import UpstreamSampler, masked_centering, no_alignment
 
 

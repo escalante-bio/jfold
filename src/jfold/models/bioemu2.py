@@ -1,11 +1,11 @@
-"""BioEmu2's architecture-specific pieces.
+"""BioEmu2's model-specific pieces.
 
 BioEmu2 is a `jfold.model.StructureModel` without a confidence head. Its trunk is the shared
 MSA module and a PairMixer stack (`jfold.model.Trunk`, in `ConditionedTrunk` with the
-unconditional branch); its input embedder is `jfold.blocks.inputs.InputEmbedder`. What differs:
-DiT-style adaLN-Zero transformer layers (plugged into
-`jfold.blocks.diffusion.DiffusionTransformerLayer`), method and contact conditioning of the trunk
-(`ConditionedTrunkInit`), and a dual-stream structure module (`DualStreamModule`, the
+unconditional branch); its input embedder is `jfold.blocks.inputs.InputEmbedder`. What
+differs: DiT-style adaLN-Zero transformer layers (plugged into
+`jfold.blocks.diffusion.DiffusionTransformerLayer`), method and contact conditioning of the
+trunk (`ConditionedTrunkInit`), and a dual-stream structure module (`DualStreamModule`, the
 diffusion slot) that updates tokens and atoms side by side, coupled after every layer, with
 optional conditioning on a companion frame and lag time (dynamics). The conditioning is the
 features' `extras` (`Conditioning`).
@@ -23,7 +23,7 @@ from jfold.blocks.denoiser import DiffusionConditioning, FourierEmbedding
 from jfold.blocks.diffusion import DiffusionTransformer
 from jfold.blocks.inputs import TrunkInit, probabilities, relative_position_features
 from jfold.blocks.windows import CenteredWindows, LocalAttention
-from jfold.model import Features, Trunk, TrunkInputs, TrunkState
+from jfold.model import Trunk
 from jfold.models.common import arrays
 from jfold.nn import (
     Attention,
@@ -31,11 +31,18 @@ from jfold.nn import (
     Linear,
     ReluMLP,
     SinglesToPair,
+    SwiGLU,
     Transition,
     scan_layers,
-    split_key,
 )
-from jfold.slots import AbstractDiffusionModule, AbstractTrunk, AbstractTrunkInit
+from jfold.slots import (
+    AbstractDiffusionModule,
+    AbstractTrunk,
+    AbstractTrunkInit,
+    Features,
+    TrunkInputs,
+    TrunkState,
+)
 
 NUM_TOKEN_TYPES = 33
 NUM_ELEMENTS = 128
@@ -63,17 +70,6 @@ class ZeroAdaLN(eqx.Module):
             self.linear(jax.nn.silu(self.norm_s(s))), [width, 2 * width], axis=-1
         )
         return self.norm_a(a) * (1 + alpha) + beta, gate
-
-
-class SwiGLU(eqx.Module):
-    """`jfold.nn.Transition` without its input norm."""
-
-    linear_a: Linear
-    linear_b: Linear
-    linear_out: Linear
-
-    def __call__(self, x: Float[Array, "... d"]) -> Float[Array, "... o"]:
-        return self.linear_out(jax.nn.silu(self.linear_a(x)) * self.linear_b(x))
 
 
 class ZeroConditionedAttention(eqx.Module):
@@ -147,7 +143,7 @@ class ContactConditioning(eqx.Module):
         )
 
 
-class ConditionedTrunkInit(AbstractTrunkInit):
+class ConditionedTrunkInit(AbstractTrunkInit[Features]):
     """`jfold.blocks.inputs.TrunkInit`, plus method and contact conditioning (the features'
     `extras`, a `Conditioning`)."""
 
@@ -158,35 +154,16 @@ class ConditionedTrunkInit(AbstractTrunkInit):
     def __call__(
         self, features: Features, s_inputs: Float[Array, "T Ci"], *, key: PRNGKeyArray | None = None
     ) -> TrunkInputs:
-        del key
         conditioning = features.extras
-        s_init, z_init = self.initial(
-            s_inputs,
-            features.relative_positions,
-            features.bonds,
-            conditioning.method,
-            conditioning.contacts,
-            conditioning.contact_threshold,
-        )
-        return TrunkInputs(s_inputs=s_inputs, s_init=s_init, z_init=z_init)
-
-    def initial(
-        self,
-        s_inputs: Float[Array, "T Ci"],
-        relative_position_features: Float[Array, "T T F"],
-        bonds: Float[Array, "T T 1"],
-        method: Float[Array, "T M"],
-        contacts: Float[Array, "T T 5"],
-        contact_threshold: Float[Array, "T T"],
-    ) -> tuple[Float[Array, "T Cs"], Float[Array, "T T Cz"]]:
         s_extra, z_extra = None, None
         if self.method is not None:
-            s_extra, z_extra = self.method(method)
+            s_extra, z_extra = self.method(conditioning.method)
         if self.contacts is not None:
-            z_contacts = self.contacts(contacts, contact_threshold)
+            z_contacts = self.contacts(conditioning.contacts, conditioning.contact_threshold)
             z_extra = z_contacts if z_extra is None else z_extra + z_contacts
-        s, z = self.init.initial(s_inputs, relative_position_features, bonds, z_extra)
-        return (s if s_extra is None else s + s_extra), z
+        s, z = self.init.initial(s_inputs, features.relative_positions, features.bonds, z_extra)
+        s = s if s_extra is None else s + s_extra
+        return TrunkInputs(s_inputs=s_inputs, s_init=s, z_init=z)
 
 
 # Dynamics conditioning ------------------------------------------------------------------------
@@ -361,21 +338,18 @@ class DualStreamTransformer(eqx.Module):
         center_atom: Int[Array, " T"],
         atom_mask: Bool[Array, " N"],
         token_mask: Bool[Array, " T"],
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> tuple[Float[Array, "T Cs"], Float[Array, "N Ca"]]:
         c_atoms = c[atom_to_token]
 
-        def step(layers, carry, k):
+        def step(layers, carry, key):
             atom_layer, token_layer, coupling, atom_bias, token_bias = layers
-            k_atoms, k_tokens = split_key(k)
             s, q = carry
-            q = atom_layer(q, c_atoms, atom_bias, atom_mask, key=k_atoms)
-            s = token_layer(s, c, token_bias, token_mask, key=k_tokens)
+            q = atom_layer(q, c_atoms, atom_bias, atom_mask)
+            s = token_layer(s, c, token_bias, token_mask)
             return coupling(s, q, c, c_atoms, atom_to_token, center_atom)
 
         layers = (self.atoms.layers, self.tokens.layers, self.coupling, atom_biases, token_biases)
-        return scan_layers(step, (s, q), layers, key=key)
+        return scan_layers(step, (s, q), layers)
 
 
 class Readout(eqx.Module):
@@ -406,10 +380,10 @@ class DualStreamContext(eqx.Module):
     atom_mask: Bool[Array, " N"]  # the atoms the denoiser moves: what a sampler centres on
     coordinate_mask: Bool[Array, " N"]
     token_mask: Bool[Array, " T"]
-    dynamics: Dynamics | None = None  # the companion frame and lag time, if any
+    dynamics: Dynamics | None = None
 
 
-class DualStreamModule(AbstractDiffusionModule):
+class DualStreamModule(AbstractDiffusionModule[Features]):
     """BioEmu2's structure module, with EDM preconditioning, conditioned on the features'
     dynamics, if any."""
 
@@ -428,49 +402,23 @@ class DualStreamModule(AbstractDiffusionModule):
         return self.conditioning.conditioning.sigma_data
 
     def prepare(self, features: Features, inputs: TrunkInputs, state: TrunkState) -> DualStreamContext:
-        conditioning = features.extras
-        return self.context(
-            features.atoms,
-            inputs.s_inputs,
-            state.s,
-            state.z,
-            features.relative_positions,
-            conditioning.center_atom,
-            conditioning.coordinate_mask,
-            features.token_mask,
-            conditioning.dynamics,
-        )
-
-    def context(
-        self,
-        atoms: Atoms,
-        s_inputs: Float[Array, "T Ci"],
-        s_trunk: Float[Array, "T Cs"],
-        z_trunk: Float[Array, "T T Cz"],
-        relative_position_features: Float[Array, "T T R"],
-        center_atom: Int[Array, " T"],
-        coordinate_mask: Bool[Array, " N"],
-        token_mask: Bool[Array, " T"],
-        dynamics: Dynamics | None = None,
-    ) -> DualStreamContext:
-        """`coordinate_mask`: atoms whose noisy positions the network reads. `dynamics`: the
-        companion frame and lag time to condition on."""
-        relative_positions = self.relative_positions(relative_position_features)
-        z = self.conditioning.pair(z_trunk, relative_positions)
-        q, p = self.atoms.condition(atoms, s_trunk, z_trunk)
+        conditioning, atoms = features.extras, features.atoms
+        relative_positions = self.relative_positions(features.relative_positions)
+        z = self.conditioning.pair(state.z, relative_positions)
+        q, p = self.atoms.condition(atoms, state.s, state.z)
         return DualStreamContext(
-            s_trunk=s_trunk,
-            s_inputs=s_inputs,
-            a_trunk=self.linear_s(self.norm_s(s_trunk)),
+            s_trunk=state.s,
+            s_inputs=inputs.s_inputs,
+            a_trunk=self.linear_s(self.norm_s(state.s)),
             queries=q,
             atom_biases=self.transformer.atoms.pair_biases(p),
             token_biases=self.transformer.tokens.pair_biases(z),
             atom_to_token=atoms.atom_to_token,
-            center_atom=center_atom,
+            center_atom=conditioning.center_atom,
             atom_mask=atoms.mask,
-            coordinate_mask=coordinate_mask,
-            token_mask=token_mask,
-            dynamics=dynamics,
+            coordinate_mask=conditioning.coordinate_mask,
+            token_mask=features.token_mask,
+            dynamics=conditioning.dynamics,
         )
 
     def __call__(
@@ -478,8 +426,6 @@ class DualStreamModule(AbstractDiffusionModule):
         context: DualStreamContext,
         x_noisy: Float[Array, "N 3"],
         t: Float[Array, ""],
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> Float[Array, "N 3"]:
         """The denoised positions at noise level `t`."""
         sigma_data, dynamics = self.sigma_data, context.dynamics
@@ -498,7 +444,6 @@ class DualStreamModule(AbstractDiffusionModule):
             context.center_atom,
             context.atom_mask,
             context.token_mask,
-            key=key,
         )
         r_update = self.readout(s, q, context.atom_to_token)
         scale = sigma_data**2 + t**2
@@ -523,7 +468,7 @@ class Conditioning(eqx.Module):
     dynamics: Dynamics | None = None
 
 
-class ConditionedTrunk(AbstractTrunk):
+class ConditionedTrunk(AbstractTrunk[Features]):
     """`jfold.model.Trunk`, with BioEmu2's unconditional branch (`unconditional_state`)."""
 
     trunk: Trunk
@@ -592,8 +537,8 @@ def msa_features(
     deletion_value: Float[Array, "S T"],
     paired: Float[Array, "S T"] | None,
 ) -> Float[Array, "S T F"]:
-    """The MSA feature vector: residue probabilities (one-hot for a fixed alignment), has-deletion, deletion value and, if the
-    model reads it, whether the row is paired."""
+    """The MSA feature vector: residue probabilities (one-hot for a fixed alignment),
+    has-deletion, deletion value and, if the model reads it, whether the row is paired."""
     extra = [has_deletion, deletion_value] + ([] if paired is None else [paired])
     return jnp.concatenate([msa] + [x[..., None] for x in extra], axis=-1)
 
@@ -603,7 +548,7 @@ def features(f: dict, *, paired: bool = True) -> Features:
     (`bioemu2.biomoa.utils.feature_converter` output, unbatched). `paired`: whether the
     model reads the MSA's pairing flag.
 
-    Arrays may be numpy or JAX (traceable: runs inside `jit`). `res_type` is class indices
+    Arrays may be numpy or JAX, traced under `jit` or not. `res_type` is class indices
     or probability vectors over the 33 token types, and `msa` probability vectors (both
     soft for a designed sequence)."""
     a = arrays(f)

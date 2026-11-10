@@ -7,10 +7,7 @@ from the pair and pLDDT and resolved logits from the single, per token or per at
 Inputs are unbatched: tokens `[T, ...]` and atoms `[N, ...]`, with masks that are False for
 padding."""
 
-from __future__ import annotations
-
 import abc
-from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -20,10 +17,13 @@ from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from jfold.blocks.pairformer import PairformerStack
 from jfold.nn import LayerNorm, Linear, SinglesToPair
-from jfold.slots import AbstractConfidenceModule
-
-if TYPE_CHECKING:
-    from jfold.model import Features, TrunkInputs, TrunkState
+from jfold.slots import (
+    AbstractConfidenceModule,
+    ConfidenceLogits,
+    Features,
+    TrunkInputs,
+    TrunkState,
+)
 
 
 class DistanceEmbedding(eqx.Module):
@@ -95,17 +95,10 @@ class AtomHead(eqx.Module):
         atom_position: Int[Array, " N"],
     ) -> Float[Array, "N B"]:
         # Every token through every position's weights, then each atom's entry: gathering
-        # the weights per atom instead would materialize an [N, C, B] array.
+        # the weights per atom would materialize an [N, C, B] array.
         per_position = jnp.einsum("tc,pcb->tpb", self.norm(s), self.weight)
         logits = per_position[atom_to_token, atom_position]
         return logits if self.bias is None else logits + self.bias[atom_position]
-
-
-class ConfidenceLogits(eqx.Module):
-    pae: Float[Array, "T T Bpae"]
-    pde: Float[Array, "T T Bpde"]
-    plddt: Float[Array, "N_or_T Bplddt"]
-    resolved: Float[Array, "N_or_T 2"] | None
 
 
 class AbstractPairInputs(eqx.Module):
@@ -116,7 +109,7 @@ class AbstractPairInputs(eqx.Module):
     def __call__(self, features: Features) -> Float[Array, "T T Cz"]: ...
 
 
-class ConfidenceModule(AbstractConfidenceModule):
+class ConfidenceModule(AbstractConfidenceModule[Features]):
     """AF3 Algorithm 31 and its heads."""
 
     singles_to_pair: SinglesToPair  # s_inputs -> pair
@@ -172,9 +165,8 @@ class ConfidenceModule(AbstractConfidenceModule):
         key: PRNGKeyArray | None = None,
     ) -> ConfidenceLogits:
         """`rep_coords`: each token's representative atom in the predicted structure.
-        `atom_position`: each atom's index within its token. `pair_features`: extra pair
-        inputs some models add to the trunk pair (Boltz-2's relative positions, bonds and
-        contacts)."""
+        `atom_position`: each atom's index within its token. `pair_features`: added to the
+        trunk pair (what `pair_inputs` embeds)."""
         s, z = s_trunk, z_trunk
         s_inputs = self.norm_s_inputs(s_inputs)
         if self.clamp_s is not None:

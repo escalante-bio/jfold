@@ -79,7 +79,7 @@ class LocalAttention(eqx.Module):
     the windowed atom pair."""
 
     attention: Attention
-    windows: CenteredWindows | ShiftedWindows
+    windows: Windows
 
     def __call__(
         self,

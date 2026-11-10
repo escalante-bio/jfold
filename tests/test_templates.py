@@ -267,7 +267,7 @@ def test_template_embedder_matches_reference(case, padding):
 def test_constant_template_mask_under_jit():
     """A released template embedder jitted with an all-real template mask made inside the
     jitted function (as `jfold.models.protenix.features` makes it) gives its eager output.
-    XLA's GPU GEMM fusion once miscompiled exactly this case."""
+    XLA's GPU GEMM fusion once miscompiled this case."""
     from test_featurize import system
 
     from jfold import pretrained

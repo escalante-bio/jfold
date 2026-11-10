@@ -1,7 +1,11 @@
 """Helpers for parity tests against the upstream PyTorch implementations."""
 
+import jax.numpy as jnp
 import numpy as np
 import torch
+
+from jfold.blocks.atoms import Atoms
+from jfold.slots import Features
 
 
 def randomize(module: torch.nn.Module, seed: int) -> torch.nn.Module:
@@ -19,6 +23,26 @@ def randomize(module: torch.nn.Module, seed: int) -> torch.nn.Module:
             else:
                 p.copy_((1.0 if name.endswith("weight") else 0.0) + 0.1 * noise)
     return module.eval()
+
+
+def block_features(num_tokens: int, num_atoms: int, **fields) -> Features:
+    """`Features` for a test of one slot's module: `fields`, the rest empty placeholders."""
+    empty = {
+        "atoms": Atoms(
+            features=jnp.zeros((num_atoms, 0)),
+            ref_pos=jnp.zeros((num_atoms, 3)),
+            ref_space_uid=jnp.zeros(num_atoms, int),
+            atom_to_token=jnp.zeros(num_atoms, int),
+            mask=jnp.ones(num_atoms, bool),
+        ),
+        "token_features": jnp.zeros((num_tokens, 0)),
+        "relative_positions": jnp.zeros((num_tokens, num_tokens, 0)),
+        "token_mask": jnp.ones(num_tokens, bool),
+        "asym_id": jnp.zeros(num_tokens, int),
+        "rep_atom": jnp.zeros(num_tokens, int),
+        "atom_position": jnp.zeros(num_atoms, int),
+    }
+    return Features(**(empty | fields))
 
 
 def rel_err(ours, ref) -> float:

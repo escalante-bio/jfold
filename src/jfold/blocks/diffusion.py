@@ -9,9 +9,9 @@ atoms, with `LocalAttention` and windowed biases `[heads, NW, queries, keys]`.""
 import equinox as eqx
 import jax
 from equinox.nn import Identity
-from jaxtyping import Array, Bool, Float, PRNGKeyArray
+from jaxtyping import Array, Bool, Float
 
-from jfold.blocks.windows import CenteredWindows, LocalAttention, ShiftedWindows
+from jfold.blocks.windows import LocalAttention, Windows
 from jfold.nn import Attention, LayerNorm, Linear, PairBias, scan_layers
 
 
@@ -102,10 +102,7 @@ class DiffusionTransformerLayer(eqx.Module):
         s: Float[Array, "N Cs"],
         bias: Float[Array, "heads ..."],
         mask: Bool[Array, " N"],
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> Float[Array, "N Ca"]:
-        del key  # inference only: no dropout yet
         a = a + self.attention(a, s, bias, mask)
         a = a + self.transition(a, s)
         return self.post_norm(a)
@@ -114,13 +111,13 @@ class DiffusionTransformerLayer(eqx.Module):
 class DiffusionTransformer(eqx.Module):
     """AF3 Algorithm 23: identical layers, stacked and scanned. Each layer's attention bias
     comes from the pair through its own `PairBias`; `pair_biases` depends only on the pair,
-    so a sampler computes it once and reuses it at every step."""
+    so a sampler computes it once."""
 
     pair_bias: PairBias  # one per layer, stacked
     layers: DiffusionTransformerLayer  # stacked
 
     @property
-    def windows(self) -> CenteredWindows | ShiftedWindows:
+    def windows(self) -> Windows:
         """The atom windows its attention runs in (an atom transformer's)."""
         return self.layers.attention.attention.windows
 
@@ -133,11 +130,9 @@ class DiffusionTransformer(eqx.Module):
         s: Float[Array, "N Cs"],
         biases: Float[Array, "layers heads ..."],
         mask: Bool[Array, " N"],
-        *,
-        key: PRNGKeyArray | None = None,
     ) -> Float[Array, "N Ca"]:
-        def step(layer_and_bias, a, k):
+        def step(layer_and_bias, a, key):
             layer, bias = layer_and_bias
-            return layer(a, s, bias, mask, key=k)
+            return layer(a, s, bias, mask)
 
-        return scan_layers(step, a, (self.layers, biases), key=key)
+        return scan_layers(step, a, (self.layers, biases))

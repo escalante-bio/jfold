@@ -398,7 +398,7 @@ CASES = {
 @eqx.filter_jit
 def _denoise(module, atoms, s_inputs, s_trunk, z_trunk, relative_positions, token_mask, x_noisy):
     context = module.context(atoms, s_inputs, s_trunk, z_trunk, relative_positions, token_mask)
-    return module(context, x_noisy, jnp.array(NOISE_LEVEL), key=jax.random.key(0))
+    return module(context, x_noisy, jnp.array(NOISE_LEVEL))
 
 
 @pytest.mark.parametrize("padding", [0, 40], ids=["unpadded", "padded"])

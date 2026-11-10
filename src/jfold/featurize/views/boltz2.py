@@ -1,6 +1,6 @@
 """Boltz-2's features, as `boltz` 2.2.1's inference featurization produces them for proteins
-(see `docs/upstream-featurization/boltz2.md`): the unbatched dict `jfold.models.boltz2.features` takes,
-plus the rest of upstream's dict.
+(see `docs/upstream-featurization/boltz2.md`): the unbatched dict
+`jfold.models.boltz2.features` takes, plus the rest of upstream's dict.
 
 Upstream's quirks are reproduced: entity-grouped chain order, Boltz's own a3m rules (one
 line per sequence, deduplication), unpaired MSA rows zipped across chains, and the
@@ -386,5 +386,5 @@ def features(system: System, *, key: jax.Array | None = None) -> dict[str, np.nd
 
 
 def atom_sites(system: System) -> AtomSites:
-    """What each real atom of `features(system)` is (chains in Boltz-2's (entity-grouped) order)."""
+    """What each real atom of `features(system)` is (chains in Boltz-2's entity-grouped order)."""
     return _atom_sites([system.chains[i] for i, _, _ in chain_order(system)], residues())

@@ -9,10 +9,9 @@ from jfold.blocks import inputs
 from jfold.blocks.atoms import Atoms
 from jfold.blocks.confidence import AbstractPairInputs
 from jfold.blocks.denoiser import FourierEmbedding
-from jfold.model import Features, TrunkInputs
 from jfold.models.common import arrays
 from jfold.nn import Linear
-from jfold.slots import AbstractTrunkInit
+from jfold.slots import AbstractTrunkInit, Features, TrunkInputs
 
 
 def atom_features(
@@ -160,7 +159,7 @@ class PairInputs(AbstractPairInputs):
         )
 
 
-class TrunkInit(AbstractTrunkInit):
+class TrunkInit(AbstractTrunkInit[Features]):
     """`jfold.blocks.inputs.TrunkInit` with Boltz-2's contact conditioning: the features'
     `pair_features` are the `contact_features`, embedded before they are added to the
     pair."""
@@ -171,7 +170,6 @@ class TrunkInit(AbstractTrunkInit):
     def __call__(
         self, features: Features, s_inputs: Float[Array, "T Ci"], *, key: PRNGKeyArray | None = None
     ) -> TrunkInputs:
-        del key
         s_init, z_init = self.init.initial(
             s_inputs,
             features.relative_positions,

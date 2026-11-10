@@ -18,9 +18,9 @@
   <!-- interface methods -->
   <text class="method" x="239" y="40">embed</text>
   <path d="M120,48 H358" stroke="#c4c9d2" stroke-width="1.2"/>
-  <text class="method" x="534" y="40">step × passes</text>
+  <text class="method" x="534" y="40">trunk × passes</text>
   <path d="M384,48 H684" stroke="#c4c9d2" stroke-width="1.2"/>
-  <text class="method" x="767" y="40">denoise × steps</text>
+  <text class="method" x="767" y="40">diffusion × steps</text>
   <path d="M712,48 H822" stroke="#c4c9d2" stroke-width="1.2"/>
 
   <!-- features -> embed -->
@@ -59,7 +59,7 @@
   <path class="edge" d="M534,178 V214"/>
   <rect class="box" x="480" y="216" width="108" height="40" rx="6"/>
   <text class="label" x="534" y="236">distogram</text>
-  <text class="method" x="534" y="276">distogram_logits</text>
+  <text class="method" x="534" y="276">distogram</text>
   <path class="edge" d="M767,132 V214"/>
   <path class="edge" d="M684,160 H700 V236 H710"/>
   <rect class="slot" x="712" y="216" width="110" height="40" rx="6"/>

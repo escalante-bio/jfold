@@ -1,7 +1,7 @@
 """End-to-end parity with the released Boltz-2 checkpoint: the trunk, one denoising step,
 confidence and distogram on a small complex featurized by Boltz itself (an MSA and a
-template on one chain, a cyclic second chain, pocket and contact constraints). Downloads weights; run with
-`pytest -m checkpoint`."""
+template on one chain, a cyclic second chain, pocket and contact constraints). Downloads
+weights; run with `pytest -m checkpoint`."""
 
 from pathlib import Path
 
@@ -149,9 +149,9 @@ def _reference():
 
 def _trunk(model, features):
     inputs = model.embed(features, key=KEY)
-    state = model.init_state(inputs)
+    state = model.trunk.init_state(inputs)
     for _ in range(NUM_RECYCLES):
-        state = model.step(features, inputs, state, key=KEY)
+        state = model.trunk(features, inputs, state, key=KEY)
     return inputs, state
 
 
@@ -160,8 +160,8 @@ def test_boltz2(tmp_path, padding):
     """Parity on the real tokens and atoms; `padding` tokens (and 64 atoms) appended by
     Boltz's own featurizer for our side, with garbage in the padded trunk state."""
     from jfold.convert import boltz2 as convert
-    from jfold.model import TrunkInputs, TrunkState
     from jfold.models import boltz2
+    from jfold.slots import TrunkInputs, TrunkState
 
     if not (CACHE / "ccd.pkl").exists():
         import boltz.main as bm
@@ -231,9 +231,9 @@ def test_boltz2(tmp_path, padding):
     ref_inputs = TrunkInputs(
         s_inputs=garbage(s_inputs, (0,)), s_init=inputs.s_init, z_init=inputs.z_init
     )
-    context = model.denoiser_context(features, ref_inputs, ref_state)
+    context = model.diffusion.prepare(features, ref_inputs, ref_state)
     x_in = jnp.array(pad(x_noisy, 64, (0,)) if padding else x_noisy)
-    ours = model.denoise(context, x_in, jnp.array(NOISE_LEVEL), key=KEY)
+    ours = model.diffusion(context, x_in, jnp.array(NOISE_LEVEL))
     errors["denoised"] = rel_err(ours[:num_atoms][atom_mask], denoised[0][atom_mask])
     coords = denoised[0].numpy()
     coords = jnp.array(pad(coords, 64, (0,)) if padding else coords)
@@ -242,7 +242,7 @@ def test_boltz2(tmp_path, padding):
     errors["pde"] = rel_err(logits.pde[:n, :n], conf["pde_logits"][0])
     errors["plddt"] = rel_err(logits.plddt[:n], conf["plddt_logits"][0])
     errors["resolved"] = rel_err(logits.resolved[:n], conf["resolved_logits"][0])
-    errors["distogram"] = rel_err(model.distogram_logits(ref_state)[:n, :n], distogram[0])
+    errors["distogram"] = rel_err(model.distogram(ref_state.z)[:n, :n], distogram[0])
     print(errors)
 
     assert errors["s_inputs"] < 1e-4

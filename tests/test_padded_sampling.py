@@ -12,9 +12,9 @@ from test_esmfold2 import C_Z, NUM_ATOMS, NUM_TOKENS, PADDING, _pad_system, _sma
 from test_sampling import pad_noise
 
 from jfold.convert import esmfold2 as convert
-from jfold.model import TrunkState
 from jfold.models import esmfold2
-from jfold.sampling import Noise
+from jfold.sampling import Noise, integrate
+from jfold.slots import TrunkState
 
 NUM_STEPS = 8
 
@@ -25,9 +25,10 @@ def _sample(model, features, z, noise):
     inputs = model.embed(features, key=key)
     state = TrunkState(s=inputs.s_init, z=z)
     for _ in range(2):
-        state = model.step(features, inputs, state, key=key)
-    state = model.finish(features, state, key=key)
-    return model.structure_sampler(features, inputs, state, num_steps=NUM_STEPS).integrate(noise)
+        state = model.trunk(features, inputs, state, key=key)
+    state = model.trunk.finish(features, state, key=key)
+    sampler = model.structure_sampler(features, inputs, state, num_steps=NUM_STEPS)
+    return integrate(sampler.denoise, sampler.atom_mask, sampler.settings, noise)
 
 
 @pytest.mark.parametrize("experimental", [False, True], ids=["release", "experimental"])

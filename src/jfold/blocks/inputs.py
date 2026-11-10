@@ -6,10 +6,9 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
-from jfold.blocks.atoms import AtomAttentionEncoder, Atoms
-from jfold.model import Features, TrunkInputs
+from jfold.blocks.atoms import AtomAttentionEncoder
 from jfold.nn import Linear, SinglesToPair
-from jfold.slots import AbstractInputEmbedder, AbstractTrunkInit
+from jfold.slots import AbstractInputEmbedder, AbstractTrunkInit, Features, TrunkInputs
 
 
 def probabilities(x: Array, num_classes: int) -> Float[Array, "... C"]:
@@ -67,7 +66,7 @@ def relative_position_features(
     )
 
 
-class TrunkInit(AbstractTrunkInit):
+class TrunkInit(AbstractTrunkInit[Features]):
     """The trunk's initial single and pair from `s_inputs` (AF3 Algorithm 1, lines 2-5):
     `s = linear_s(s_inputs)`; `z_ij = linear_i(s_i) + linear_j(s_j) + relative positions +
     bonds` (plus any model-specific `pair_features`)."""
@@ -82,7 +81,6 @@ class TrunkInit(AbstractTrunkInit):
     def __call__(
         self, features: Features, s_inputs: Float[Array, "T Ci"], *, key: PRNGKeyArray | None = None
     ) -> TrunkInputs:
-        del key
         s_init, z_init = self.initial(
             s_inputs, features.relative_positions, features.bonds, features.pair_features
         )
@@ -106,36 +104,22 @@ class TrunkInit(AbstractTrunkInit):
         return s, z
 
 
-class InputEmbedder(AbstractInputEmbedder):
+class InputEmbedder(AbstractInputEmbedder[Features]):
     """AF3 Algorithm 2: `s_inputs` from per-token atom aggregates (the encoder, without
     coordinates) and the model's token features (`jfold.models.*.token_features`),
-    concatenated (AF3) or projected and added (`linear_tokens`, Boltz-2)."""
+    concatenated (AF3) or projected and added (`linear_tokens`, Boltz-2). The aggregate is
+    zeroed for tokens outside the features' `keep_aggregate`."""
 
     encoder: AtomAttentionEncoder
     linear_tokens: Linear | None = None
 
-    def __call__(self, features: Features, *, key: PRNGKeyArray | None = None) -> Float[Array, "T Ci"]:
-        return self.embed(
-            features.atoms, features.token_features, features.keep_aggregate, key=key
-        )
-
-    def embed(
-        self,
-        atoms: Atoms,
-        token_features: Float[Array, "T F"],
-        keep_aggregate: Bool[Array, " T"] | None = None,
-        *,
-        key: PRNGKeyArray | None = None,
-    ) -> Float[Array, "T Ci"]:
-        """`s_inputs` from the atoms and token features; `keep_aggregate`: tokens whose atom
-        aggregate is used."""
+    def __call__(self, features: Features) -> Float[Array, "T Ci"]:
+        atoms, token_features = features.atoms, features.token_features
         q, c, p = self.encoder.condition(atoms)
         biases = self.encoder.transformer.pair_biases(p)
-        a, _ = self.encoder(
-            q, c, biases, atoms.atom_to_token, atoms.mask, token_features.shape[0], key=key
-        )
-        if keep_aggregate is not None:
-            a = jnp.where(keep_aggregate[:, None], a, 0)
+        a, _ = self.encoder(q, c, biases, atoms.atom_to_token, atoms.mask, token_features.shape[0])
+        if features.keep_aggregate is not None:
+            a = jnp.where(features.keep_aggregate[:, None], a, 0)
         if self.linear_tokens is None:
             return jnp.concatenate([a, token_features], axis=-1)
         return a + self.linear_tokens(token_features)

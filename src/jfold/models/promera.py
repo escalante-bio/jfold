@@ -3,14 +3,13 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, Float, Int
 
 from jfold.blocks.atoms import Atoms, mean_atoms_to_tokens
 from jfold.blocks.inputs import probabilities, relative_position_features
-from jfold.model import Features
 from jfold.models.common import arrays, msa_features
 from jfold.nn import Linear
-from jfold.slots import AbstractInputEmbedder
+from jfold.slots import AbstractInputEmbedder, Features
 
 
 def atom_features(
@@ -56,27 +55,17 @@ class AtomAggregate(eqx.Module):
         return mean_atoms_to_tokens(a, atoms.atom_to_token, atoms.mask, num_tokens)
 
 
-class PromeraInputEmbedder(AbstractInputEmbedder):
+class PromeraInputEmbedder(AbstractInputEmbedder[Features]):
     """`s_inputs`: the atom aggregates, kept where `keep_aggregate` holds, concatenated with
     the token features."""
 
     encoder: AtomAggregate
 
-    def __call__(self, features: Features, *, key: PRNGKeyArray | None = None) -> Float[Array, "T Ci"]:
-        return self.embed(features.atoms, features.token_features, features.keep_aggregate)
-
-    def embed(
-        self,
-        atoms: Atoms,
-        token_features: Float[Array, "T F"],
-        keep_aggregate: Bool[Array, " T"] | None = None,
-        *,
-        key: PRNGKeyArray | None = None,
-    ) -> Float[Array, "T Ci"]:
-        a = self.encoder(atoms, token_features.shape[0])
-        if keep_aggregate is not None:
-            a = jnp.where(keep_aggregate[:, None], a, 0)
-        return jnp.concatenate([a, token_features], axis=-1)
+    def __call__(self, features: Features) -> Float[Array, "T Ci"]:
+        a = self.encoder(features.atoms, features.token_features.shape[0])
+        if features.keep_aggregate is not None:
+            a = jnp.where(features.keep_aggregate[:, None], a, 0)
+        return jnp.concatenate([a, features.token_features], axis=-1)
 
 
 def features(f: dict) -> Features:

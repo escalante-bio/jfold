@@ -9,13 +9,21 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import torch
-from reference import STEPS, assert_finite, assert_round_trip, assert_schedule, randomize, rel_err
+from reference import (
+    STEPS,
+    assert_finite,
+    assert_round_trip,
+    assert_schedule,
+    block_features,
+    randomize,
+    rel_err,
+)
 
 from jfold.blocks.atoms import Atoms
 from jfold.blocks.inputs import relative_position_features
 from jfold.convert import bioemu2
-from jfold.model import Features, TrunkInputs, TrunkState
 from jfold.models import bioemu2 as bioemu2_model
+from jfold.slots import Features, TrunkInputs, TrunkState
 
 NUM_TOKENS, NUM_ATOMS, NUM_ROWS = 7, 16, 5
 W, H = 4, 8  # atoms per query window, keys per window
@@ -245,16 +253,8 @@ def _sequence_embedder(**kwargs):
 
 @eqx.filter_jit
 def _trunk(init, trunk, features, conditioning, s_inputs, num_iterations):
-    inputs_s, inputs_z = init.initial(
-        s_inputs,
-        features.relative_positions,
-        features.bonds,
-        conditioning.method,
-        conditioning.contacts,
-        conditioning.contact_threshold,
-    )
-    inputs = TrunkInputs(s_inputs=s_inputs, s_init=inputs_s, z_init=inputs_z)
-    state = TrunkState(s=jnp.zeros_like(inputs_s), z=jnp.zeros_like(inputs_z))
+    inputs = init(dataclasses.replace(features, extras=conditioning), s_inputs)
+    state = trunk.init_state(inputs)
     for _ in range(num_iterations):
         state = trunk(features, inputs, state, key=KEY)
     return inputs, state
@@ -335,7 +335,7 @@ def test_distogram_matches_reference():
 
 @eqx.filter_jit
 def _transformer(transformer, a, s, pair, mask):
-    return transformer(a, s, transformer.pair_biases(pair), mask, key=KEY)
+    return transformer(a, s, transformer.pair_biases(pair), mask)
 
 
 @pytest.mark.parametrize("padding", [0, 3], ids=["unpadded", "padded"])
@@ -420,7 +420,7 @@ def test_input_embedder_matches_reference(padding):
 
     @eqx.filter_jit
     def run(ours, atoms):
-        return ours.embed(atoms, features.token_features, key=KEY)
+        return ours(dataclasses.replace(features, atoms=atoms))
 
     out = run(ours, features.atoms)
     assert rel_err(out[:NUM_TOKENS], ref[0]) < 1e-5
@@ -461,18 +461,17 @@ def _structure_module(dynamics, downscale):
 
 @eqx.filter_jit
 def _denoise(module, atoms, x: dict, conditioning, token_mask, dynamics):
-    context = module.context(
-        atoms,
-        x["s_inputs"],
-        x["s_trunk"],
-        x["z_trunk"],
-        x["rel_pos"],
-        conditioning.center_atom,
-        conditioning.coordinate_mask,
-        token_mask,
-        dynamics,
+    features = block_features(
+        token_mask.shape[0],
+        atoms.mask.shape[0],
+        atoms=atoms,
+        token_mask=token_mask,
+        relative_positions=x["rel_pos"],
+        extras=dataclasses.replace(conditioning, dynamics=dynamics),
     )
-    return module(context, x["x_noisy"], jnp.array(SIGMA), key=KEY)
+    inputs = TrunkInputs(s_inputs=x["s_inputs"], s_init=x["s_trunk"], z_init=x["z_trunk"])
+    context = module.prepare(features, inputs, TrunkState(s=x["s_trunk"], z=x["z_trunk"]))
+    return module(context, x["x_noisy"], jnp.array(SIGMA))
 
 
 CONDITIONING = {
@@ -615,16 +614,16 @@ def test_bioemu2_preview():
     @eqx.filter_jit
     def run_trunk(model, features):
         inputs = model.embed(features, key=KEY)
-        state = model.init_state(inputs)
+        state = model.trunk.init_state(inputs)
         for _ in range(NUM_RECYCLES + 1):
-            state = model.step(features, inputs, state, key=KEY)
+            state = model.trunk(features, inputs, state, key=KEY)
         return inputs, state
 
     inputs, state = run_trunk(model, features)
     assert rel_err(inputs.s_inputs, trunk.s_inputs[0]) < 1e-5
     assert rel_err(state.s, trunk.single[0]) < 1e-5
     assert rel_err(state.z, trunk.pair[0]) < 1e-5
-    assert rel_err(model.distogram_logits(state), trunk.distogram[0]) < 1e-5
+    assert rel_err(model.distogram(state.z), trunk.distogram[0]) < 1e-5
 
     # The structure module from the reference trunk, so errors do not compound.
     ref_state = TrunkState(s=jnp.array(trunk.single[0].numpy()), z=jnp.array(trunk.pair[0].numpy()))
@@ -634,8 +633,8 @@ def test_bioemu2_preview():
 
     @eqx.filter_jit
     def run_denoise(model, features, inputs, state, x_noisy):
-        context = model.denoiser_context(features, inputs, state)
-        return model.denoise(context, x_noisy, jnp.array(sigma))
+        context = model.diffusion.prepare(features, inputs, state)
+        return model.diffusion(context, x_noisy, jnp.array(sigma))
 
     ours = run_denoise(model, features, ref_inputs, ref_state, jnp.array(x_noisy))
     real = feats["atom_pad_mask"][0].numpy()  # padded atoms' outputs are unspecified

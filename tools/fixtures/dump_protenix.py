@@ -11,19 +11,18 @@ Run from `~/jfold`:
 Determinism: the only random step for protein-only inputs is the per-residue
 `ref_pos` augmentation (`protenix.utils.geometry.random_transform`: a translation from
 `np.random.uniform` and a rotation from `scipy.spatial.transform.Rotation.random()`,
-both drawing from numpy's global RNG). The global numpy and `random` RNGs are seeded
-with `SEED` right before each system is featurized, so the files are reproducible
-bit-for-bit. A torch-free featurizer cannot reproduce the exact rotations without
-replaying numpy's legacy RNG in the same order, so the unaugmented conformer is saved
-too (`aux_ref_pos_conformer`, see below) for parity up to a per-residue rigid motion.
+both on numpy's global RNG). numpy and `random` are seeded with `SEED` right before each
+system, so the files are reproducible bit-for-bit. A torch-free featurizer cannot
+reproduce the rotations without replaying numpy's legacy RNG in the same order, so the
+unaugmented conformer is saved too (`aux_ref_pos_conformer`) for parity up to a
+per-residue rigid motion.
 
 Keys:
 - every numpy array of the upstream dict, under its own name;
 - `constraint_feature__<name>` for the nested `constraint_feature` dict;
-- `aux_*` extras that are not upstream features but help parity tests:
-  `aux_ref_pos_conformer` (the CCD/RDKit reference conformer coordinates per atom,
-  before centring and augmentation, `atom_array.ref_pos`), `aux_atom_name`,
-  `aux_res_name`, `aux_element`, `aux_seed`.
+- `aux_*` extras (not upstream features) for parity tests: `aux_ref_pos_conformer` (the
+  CCD/RDKit reference conformer per atom, before centring and augmentation,
+  `atom_array.ref_pos`), `aux_atom_name`, `aux_res_name`, `aux_element`, `aux_seed`.
 
 Templates (the systems in `template_systems.json`, PDB files from `make_templates.py`):
 `ChainInput.template` is the PDB file's chain as gemmi reads it, as mosaic passes it; with

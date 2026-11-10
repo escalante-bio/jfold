@@ -47,8 +47,8 @@ REPOS: dict[str, tuple[str, bool]] = {
         True,
     ),
 }
-# The shared ESMC each checkpoint reads (`esmc_6b` unless listed). Each is stored once and
-# attached on loading. Its source: the checkpoint whose own ESMC it is.
+# The shared ESMC each checkpoint reads (`esmc_6b` unless listed), and each one's source:
+# the checkpoint whose own ESMC it is.
 ESMC: dict[str, str] = {
     "esmfold2_experimental_fast_base300m": "esmc_300m",
     "esmfold2_experimental_fast_base600m": "esmc_600m",
@@ -112,9 +112,8 @@ def _build(experimental: bool, checkpoint: Path):
 
 
 def _convert(experimental: bool, m) -> eqx.Module:
-    """The structure model, without its ESMC (converted once, as its own release, and
-    attached on loading). On the host, so a GPU never holds this copy and the loaded one
-    together."""
+    """The structure model, without its ESMC. On the host, so a GPU never holds this copy
+    and the loaded one together."""
     import jax
 
     from jfold.convert import esmfold2 as convert

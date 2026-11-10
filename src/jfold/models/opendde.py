@@ -11,17 +11,16 @@ whose diffusion slot is `StructuralDiffusion`, with the structural tokens as the
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, Float, Int
 
 from jfold.blocks.atoms import Atoms
 from jfold.blocks.denoiser import DiffusionContext, DiffusionModule
 from jfold.blocks.inputs import relative_position_features
 from jfold.blocks.pairformer import PairformerStack
-from jfold.model import Features, TrunkInputs, TrunkState
 from jfold.models import protenix
 from jfold.models.common import arrays
 from jfold.nn import LayerNorm, Linear
-from jfold.slots import AbstractDiffusionModule
+from jfold.slots import AbstractDiffusionModule, Features, TrunkInputs, TrunkState
 
 # Each structural-token role's class (`opendde.data.tokenizer.STRUCTURAL_TOKEN_ROLES`):
 # 0 backbone (protein, DNA, RNA), 1 protein side chain, 2 nucleotide base, 3 none (an atom).
@@ -138,7 +137,7 @@ class StructuralTokenExpander(eqx.Module):
         return delta
 
 
-class StructuralDiffusion(AbstractDiffusionModule):
+class StructuralDiffusion(AbstractDiffusionModule[Features]):
     """OpenDDE's diffusion slot: the residue trunk's outputs expanded to structural tokens
     (`expander`, the features' `extras`), refined (`refiner`), and denoised by `diffusion`
     on those tokens with the structural attention bias added."""
@@ -173,14 +172,9 @@ class StructuralDiffusion(AbstractDiffusionModule):
         )
 
     def __call__(
-        self,
-        context: DiffusionContext,
-        x_noisy: Float[Array, "N 3"],
-        t: Float[Array, ""],
-        *,
-        key: PRNGKeyArray | None = None,
+        self, context: DiffusionContext, x_noisy: Float[Array, "N 3"], t: Float[Array, ""]
     ) -> Float[Array, "N 3"]:
-        return self.diffusion(context, x_noisy, t, key=key)
+        return self.diffusion(context, x_noisy, t)
 
 
 def features(f: dict) -> Features:

@@ -363,10 +363,10 @@ def msa_rows(m) -> dict[str, int | None]:
     at inference, the query like any other. OpenDDE: `msa_depth` rows, rows with a residue
     first (`subsample_msa_feature_dict_valid_first`). Protenix and Mol-1: a uniformly random
     number of rows, from the test `min_size` to all, at most the test `sample_cutoff`
-    (`sample_msa_feature_dict_random_without_replacement`), computed on at most
-    `DEFAULT_MAX_ROWS` rows: a pass draws that many and masks those past the random number,
-    as upstream when the number is no larger, and bounded otherwise (upstream's up to
-    16384, on the whole MSA, would make every pass compute on every row)."""
+    (`sample_msa_feature_dict_random_without_replacement`). A pass draws at most
+    `DEFAULT_MAX_ROWS` rows and masks those past the random number: upstream's result when
+    the number is no larger. Upstream's bound, up to 16384 on the whole MSA, would make
+    every pass compute on every row."""
     if hasattr(m, "msa_depth"):
         return {"max_rows": m.msa_depth, "min_rows": None}
     cfg = m.msa_configs

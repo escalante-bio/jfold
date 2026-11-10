@@ -1,7 +1,7 @@
 """ProMERA's features, as tinyprot's `AF3Featurizer`, `promera.inference.utils.finalize_feats`
-and `promera.data.utils.collate` produce them for proteins (see `docs/upstream-featurization/promera.md`):
-the dict `jfold.models.promera.features` takes, plus upstream's `frames_mask` and
-`msa_paired`, unbatched.
+and `promera.data.utils.collate` produce them for proteins (see
+`docs/upstream-featurization/promera.md`): the dict `jfold.models.promera.features` takes,
+plus upstream's `frames_mask` and `msa_paired`, unbatched.
 
 The only random step upstream is the reference conformer: each residue's centred CCD ideal
 coordinates get a N(0, 1) translation, then a uniform random rotation, from numpy's global
@@ -219,10 +219,9 @@ def features(
     key: jax.Array | None = None,
     taxonomy: Callable[[str], int] | None = None,
 ) -> dict[str, np.ndarray]:
-    """The feature dict for `system`. `key`: a `jax.random` key to draw the per-residue
-    reference-conformer pose, as upstream does with numpy's global RNG; None leaves the
-    canonical conformers. `taxonomy`: UniRef100 id to taxonomy id, for a3ms with
-    UniRef100 headers (see `parse_msa`)."""
+    """The feature dict for `system`. `key`: draws the per-residue reference-conformer pose;
+    None leaves the canonical conformers. `taxonomy`: UniRef100 id to taxonomy id, for a3ms
+    with UniRef100 headers (see `parse_msa`)."""
     system = system.without_templates("ProMERA")
     table = residues()
     chains = system.chains
@@ -255,7 +254,6 @@ def features(
 
     name_chars = [[ord(c) - 32 for c in n] + [0] * (4 - len(n)) for n in names]
 
-    # MSA.
     msas = [_chain_msa(chain, taxonomy) for chain in chains]
     pairing, is_paired = pair_rows(msas)
     depth = len(pairing)
