@@ -1277,6 +1277,8 @@ EXPERIMENTAL = (
     "esmfold2_experimental_fast_base300m",
     "esmfold2_experimental_fast_base600m",
     "esmfold2_experimental_fast_base6b",
+    "esmfold2_experimental_fast_base300m_confidence",
+    "esmfold2_experimental_fast_base600m_confidence",
 )
 
 

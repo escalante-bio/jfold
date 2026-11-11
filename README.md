@@ -145,6 +145,11 @@ Every model above converts whole and matches its released checkpoints (the four
 ESMFold2-Experimental checkpoints too), with each upstream's sampler settings. Not ported:
 training heads.
 
+The 300M and 600M ESMFold2 scaling checkpoints, released without a confidence head, also
+come with the heads [FastPLMs](https://github.com/Synthyra/FastPLMs) trained on them:
+`esmfold2_experimental_fast_base300m_confidence` and
+`esmfold2_experimental_fast_base600m_confidence`.
+
 ## License
 
 The code is MIT-licensed ([LICENSE](LICENSE)). The converted weights keep their upstream

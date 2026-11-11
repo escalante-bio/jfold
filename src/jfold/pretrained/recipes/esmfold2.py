@@ -11,6 +11,11 @@ on loading.
   `esmfold2_experimental_fast` and their `_cutoff2025` variants. ESMC comes from its own
   repository (`config.esmc_id`, through the Hugging Face cache); upstream always loads it in
   bfloat16, so its converted weights are bfloat16 values.
+- With a confidence head trained separately (`CONFIDENCE`): the 300M and 600M scaling
+  checkpoints, which Biohub released without one, with the heads Synthyra trained on them
+  (frozen) for FastPLMs: `esmfold2_experimental_fast_base300m_confidence` and
+  `esmfold2_experimental_fast_base600m_confidence`. The checkpoint is Biohub's; the head
+  comes from Synthyra's repository, at a pinned revision.
 
 The checkpoint is the repository's snapshot directory. Pass `checkpoint_path` to reuse a
 Hugging Face cache (`snapshot`); otherwise it is downloaded into jfold's cache."""
@@ -47,12 +52,29 @@ REPOS: dict[str, tuple[str, bool]] = {
         True,
     ),
 }
+# A scaling checkpoint with the confidence head trained on it (frozen) for FastPLMs: name ->
+# (the checkpoint's name, the head's repository, its revision). The head is the
+# experimental type's own `ConfidenceHead`, stored under `confidence_head.` in that
+# repository's `model.safetensors` (beside a copy of the checkpoint's weights).
+CONFIDENCE: dict[str, tuple[str, str, str]] = {
+    "esmfold2_experimental_fast_base300m_confidence": (
+        "esmfold2_experimental_fast_base300m",
+        "Synthyra/ESMFold2-300",
+        "b76d9e3063571de5d43825f26f07bd4da2e906f8",
+    ),
+    "esmfold2_experimental_fast_base600m_confidence": (
+        "esmfold2_experimental_fast_base600m",
+        "Synthyra/ESMFold2-600",
+        "38fa0be7397a485afd4a752202447693098f3d50",
+    ),
+}
 # The shared ESMC each checkpoint reads (`esmc_6b` unless listed), and each one's source:
 # the checkpoint whose own ESMC it is.
 ESMC: dict[str, str] = {
     "esmfold2_experimental_fast_base300m": "esmc_300m",
     "esmfold2_experimental_fast_base600m": "esmc_600m",
 }
+ESMC |= {name: ESMC[base] for name, (base, _, _) in CONFIDENCE.items()}
 ESMC_SOURCES: dict[str, str] = {
     "esmc_6b": "esmfold2",
     "esmc_300m": "esmfold2_experimental_fast_base300m",
@@ -72,11 +94,12 @@ MASKED_LM: dict[str, tuple[str, str | None]] = {
 def snapshot(name: str, cache_dir: str | Path | None = None) -> Path:
     """The checkpoint of `name` in a Hugging Face cache (`cache_dir`, default
     `HF_HUB_CACHE`), downloaded there if missing: a `checkpoint_path` for
-    `jfold.pretrained.load` and `upstream`."""
+    `jfold.pretrained.load` and `upstream`. For a model with a separately trained
+    confidence head, Biohub's checkpoint (the head is read from the default cache)."""
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
 
-    repo = REPOS[name][0]
+    repo = REPOS[CONFIDENCE[name][0] if name in CONFIDENCE else name][0]
     try:
         return Path(snapshot_download(repo, cache_dir=cache_dir, local_files_only=True))
     except LocalEntryNotFoundError:
@@ -109,6 +132,43 @@ def _build(experimental: bool, checkpoint: Path):
             str(checkpoint), device="cpu", dtype=torch.float32, esmc_precision="fp32"
         )
     return model.eval()
+
+
+def _confidence_file(repo: str, revision: str) -> str:
+    """The safetensors file holding a separately trained confidence head, in the Hugging
+    Face cache."""
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(repo, "model.safetensors", revision=revision)
+
+
+def _fetch_with_confidence(repo: str, head_repo: str, revision: str, directory: Path) -> None:
+    _fetch(repo, directory)
+    _confidence_file(head_repo, revision)
+
+
+def _build_with_confidence(head_repo: str, revision: str, checkpoint: Path):
+    """An experimental checkpoint released without a confidence head, with the head of
+    `head_repo`: the upstream `ConfidenceHead` of the checkpoint's own config, every
+    tensor loaded from the file."""
+    from esm.models.esmfold2.experimental import ConfidenceHead
+    from safetensors import safe_open
+
+    model = _build(True, checkpoint)
+    if model.confidence_head is not None:
+        raise ValueError(f"{checkpoint} has a confidence head of its own")
+    model.config.confidence_head.enabled = True
+    head = ConfidenceHead(model.config)
+    prefix = "confidence_head."
+    with safe_open(_confidence_file(head_repo, revision), "pt") as file:
+        state = {
+            key.removeprefix(prefix): file.get_tensor(key).float()
+            for key in file.keys()  # noqa: SIM118
+            if key.startswith(prefix)
+        }
+    head.load_state_dict(state, strict=True)
+    model.confidence_head = head.eval()
+    return model
 
 
 def _convert(experimental: bool, m) -> eqx.Module:
@@ -183,7 +243,7 @@ def _attach_esmc(experimental: bool, esmc_name: str, model: eqx.Module, load) ->
 
 
 # The weights' licence (the `esm` package's and the model cards'), which copies carry.
-LICENSE = '''**License (MIT)**
+LICENSE = """**License (MIT)**
 
 Copyright 2026 Chan Zuckerberg Biohub, Inc.
 
@@ -192,43 +252,71 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-'''
+"""
 
-RELEASES = {
-    name: Release(
-        upstream="esm",
-        source=f"https://huggingface.co/{repo}",
-        filename=repo.split("/")[1],
-        fetch=partial(_fetch, repo),
-        build=partial(_build, experimental),
-        convert=partial(_convert, experimental),
-        assemble=partial(_attach_esmc, experimental, ESMC.get(name, "esmc_6b")),
-        detach=_detach_esmc,
-        license=LICENSE,
-    )
-    for name, (repo, experimental) in REPOS.items()
-} | {
-    esmc: Release(
-        upstream="esm",
-        source=f"https://huggingface.co/{REPOS[fold][0]} (its ESMC)",
-        filename=REPOS[fold][0].split("/")[1],
-        fetch=partial(_fetch, REPOS[fold][0]),
-        build=partial(_build, REPOS[fold][1]),
-        convert=_convert_esmc,
-        license=LICENSE,
-    )
-    for esmc, fold in ESMC_SOURCES.items()
-} | {
-    name: Release(
-        upstream="esm",
-        source=f"https://huggingface.co/{repo}",
-        filename=repo.split("/")[1],
-        fetch=partial(_fetch, repo),
-        build=_build_masked_lm,
-        convert=_convert_masked_lm,
-        assemble=None if shared is None else partial(_attach_masked_lm_esmc, shared),
-        detach=None if shared is None else _detach_masked_lm_esmc,
-        license=LICENSE,
-    )
-    for name, (repo, shared) in MASKED_LM.items()
-}
+# The separately trained confidence heads' terms, after the checkpoint's.
+CONFIDENCE_LICENSE = """
+The confidence head's weights are from https://huggingface.co/{repo} (revision
+{revision}), trained by Synthyra for FastPLMs (https://github.com/Synthyra/FastPLMs) and
+released there under the MIT licence.
+"""
+
+RELEASES = (
+    {
+        name: Release(
+            upstream="esm",
+            source=f"https://huggingface.co/{repo}",
+            filename=repo.split("/")[1],
+            fetch=partial(_fetch, repo),
+            build=partial(_build, experimental),
+            convert=partial(_convert, experimental),
+            assemble=partial(_attach_esmc, experimental, ESMC.get(name, "esmc_6b")),
+            detach=_detach_esmc,
+            license=LICENSE,
+        )
+        for name, (repo, experimental) in REPOS.items()
+    }
+    | {
+        name: Release(
+            upstream="esm",
+            source=(
+                f"https://huggingface.co/{REPOS[base][0]}, with the confidence head of "
+                f"https://huggingface.co/{head_repo} (revision {revision})"
+            ),
+            filename=REPOS[base][0].split("/")[1],
+            fetch=partial(_fetch_with_confidence, REPOS[base][0], head_repo, revision),
+            build=partial(_build_with_confidence, head_repo, revision),
+            convert=partial(_convert, True),
+            assemble=partial(_attach_esmc, True, ESMC[name]),
+            detach=_detach_esmc,
+            license=LICENSE + CONFIDENCE_LICENSE.format(repo=head_repo, revision=revision),
+        )
+        for name, (base, head_repo, revision) in CONFIDENCE.items()
+    }
+    | {
+        esmc: Release(
+            upstream="esm",
+            source=f"https://huggingface.co/{REPOS[fold][0]} (its ESMC)",
+            filename=REPOS[fold][0].split("/")[1],
+            fetch=partial(_fetch, REPOS[fold][0]),
+            build=partial(_build, REPOS[fold][1]),
+            convert=_convert_esmc,
+            license=LICENSE,
+        )
+        for esmc, fold in ESMC_SOURCES.items()
+    }
+    | {
+        name: Release(
+            upstream="esm",
+            source=f"https://huggingface.co/{repo}",
+            filename=repo.split("/")[1],
+            fetch=partial(_fetch, repo),
+            build=_build_masked_lm,
+            convert=_convert_masked_lm,
+            assemble=None if shared is None else partial(_attach_masked_lm_esmc, shared),
+            detach=None if shared is None else _detach_masked_lm_esmc,
+            license=LICENSE,
+        )
+        for name, (repo, shared) in MASKED_LM.items()
+    }
+)

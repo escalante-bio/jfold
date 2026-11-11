@@ -7,7 +7,8 @@ trunk, sample structures and write them as a multi-model PDB file.
 
 ESMFold2 folds from single sequences (`--msa` is optional). The default checkpoint,
 ESMFold2-Experimental-Fast on ESMC 300M, has no confidence head, so the samples are not
-ranked. The first run downloads the converted weights (to `$JFOLD_CACHE_DIR`,
+ranked (`esmfold2_experimental_fast_base300m_confidence` is that checkpoint with a
+separately trained one). The first run downloads the converted weights (to `$JFOLD_CACHE_DIR`,
 `~/.cache/jfold`).
 """
 
