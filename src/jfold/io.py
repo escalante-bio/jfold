@@ -1,22 +1,8 @@
-"""Saving and loading converted models without pickle.
+"""Save and load converted models without pickle.
 
-A saved model is a directory of two files:
-
-- `weights.safetensors`: every array, keyed by its path in the model
-  (`trunk.pairformer.layers.tri_mul_out.linear_a.weight`). Readable with numpy
-  alone (`safetensors.numpy.load_file`).
-- `model.json`: the format version, metadata (`provenance` builds the standard
-  fields: model type, source checkpoint and its hash, upstream version, date), and
-  the model's structure: each module's class (`jfold.blocks.pairformer:PairformerLayer`) and
-  fields, plain values (numbers, strings, tuples, `null`), module-level functions by
-  name (`jfold.sampling.core:masked_centering`), and each array's shape and dtype.
-
-Loading rebuilds the modules from the JSON and fills in the arrays by path. A file
-depends only on jfold's class and field names (a mismatch is reported by name; a field
-the file lacks takes its default, if it has one), and a class that moves or is renamed
-keeps loading from older files through `MOVED`. Loading
-imports classes and functions from jfold and equinox only, unless the caller names more
-module prefixes (`namespaces`, e.g. another library's own modules).
+A saved model is a directory with `weights.safetensors`, holding every array by its path in
+the model, and `model.json`, holding the metadata and the model's classes and fields.
+Loading imports classes only from jfold, equinox and any extra `namespaces` passed in.
 """
 
 import dataclasses
@@ -36,10 +22,8 @@ from safetensors.numpy import load_file, save_file
 
 FORMAT_VERSION = 1
 _STRUCTURE, _WEIGHTS = "model.json", "weights.safetensors"
-# Classes and functions a file may name, besides a caller's own `namespaces`.
 _NAMESPACES = ("jfold.", "equinox.")
-# Names in older files -> the classes' current names. Saving writes the current name; add
-# an entry when moving or renaming a class that saved models use.
+# Maps class names in older files to their current names.
 MOVED = {
     "jfold.blocks.confidence:SinglesToPair": "jfold.nn:SinglesToPair",
     "jfold.models.boltz2:TrunkMSA": "jfold.blocks.msa:ResidualMSA",
@@ -56,9 +40,8 @@ def save(
     metadata: dict | None = None,
     namespaces: tuple[str, ...] = (),
 ) -> None:
-    """Write `model` to the directory `path` (created if needed). `metadata` must be
-    JSON-serialisable. `namespaces`: module prefixes beyond jfold and equinox whose classes
-    and functions the model may use (e.g. `("mosaic.",)`); loading needs the same."""
+    """Write `model` to the directory `path`, with `namespaces` naming any extra module prefixes its
+    classes come from."""
     path = Path(path)
     arrays: dict[str, np.ndarray] = {}
     structure = {
@@ -80,16 +63,8 @@ def provenance(
     upstream: str,
     **extra: Any,
 ) -> dict:
-    """The standard metadata for a converted model, for `save`:
-
-    - `model`: its type, e.g. `"esmfold2-experimental"`.
-    - `checkpoint`: `source`, where the weights came from (a Hugging Face repo and file,
-      or a URL), and `sha256`, the hash of the local file (or of every file in a
-      directory, by relative name) at `checkpoint`.
-    - `upstream`: the upstream package's name and installed version.
-    - `converted_at`: today's date (UTC).
-
-    `extra` entries are added as they are."""
+    """Return the standard `save` metadata: model type, checkpoint source and SHA-256, upstream
+    package version and date."""
     return {
         "model": model,
         "checkpoint": {"source": source, "sha256": _sha256(Path(checkpoint).expanduser())},
@@ -112,21 +87,19 @@ def _sha256(path: Path) -> str:
 
 
 def load(path: str | Path, *, namespaces: tuple[str, ...] = ()) -> eqx.Module:
-    """The model saved at `path`, its arrays on JAX's default device. The arrays are read
-    on the host and moved in one `device_put` (array-by-array transfers of a very large
-    model fragment the device's memory pool). `namespaces`: module prefixes beyond jfold and
-    equinox it may import classes and functions from, as given to `save`."""
+    """Load the model saved at `path` onto JAX's default device, with the `namespaces` given to
+    `save`."""
     allowed = _NAMESPACES + tuple(namespaces)
     model = _decode(
         read_structure(path)["model"], load_file(str(Path(path) / _WEIGHTS)), allowed
     )
     arrays, rest = eqx.partition(model, lambda x: isinstance(x, np.ndarray))
-    return eqx.combine(jax.device_put(arrays), rest)  # plain values stay Python values
+    # One transfer: copying a large model array by array fragments the device's memory.
+    return eqx.combine(jax.device_put(arrays), rest)
 
 
 def read_structure(path: str | Path) -> dict:
-    """The parsed `model.json` (format version, metadata, structure), checked for a
-    format this jfold reads."""
+    """Read `model.json`, raising ValueError for an unsupported format version."""
     structure = json.loads((Path(path) / _STRUCTURE).read_text())
     if structure.get("format_version") != FORMAT_VERSION:
         raise ValueError(
@@ -143,7 +116,6 @@ def _jfold_version() -> str | None:
 
 
 def _name(obj, allowed: tuple[str, ...]) -> str:
-    """`module:qualname`, preferring equinox's public modules to its private ones."""
     module = obj.__module__
     if module.startswith("equinox"):
         for public in ("equinox.nn", "equinox"):
@@ -219,8 +191,7 @@ def _decode(node: Any, arrays: dict[str, np.ndarray], allowed: tuple[str, ...]) 
                 raise ValueError(
                     f"{name}: fields changed (missing {sorted(missing)}, unknown {sorted(extra)})"
                 )
-            # As equinox rebuilds a module when unflattening: no __init__, fields as stored
-            # (its default for a field the file lacks).
+            # Bypass __init__, as equinox does when unflattening a module.
             module = object.__new__(cls)
             for field, f in by_name.items():
                 if field in fields:

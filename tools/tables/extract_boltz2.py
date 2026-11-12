@@ -1,8 +1,4 @@
-"""Boltz-2's residue table (`jfold/featurize/data/boltz2.npz`) from its canonical residue
-mols (`~/.boltz/mols/<RES>.pkl`, the Boltz-2 `mols.tar` download): for the 20 amino acids
-and UNK, the atoms of `const.ref_atoms` in that order, with each atom's element and formal
-charge as stored, and all 10 stored conformers (`[10, A, 3]`, in conformer-id order).
-Needs the `boltz` package and its downloaded mols; run once:
+"""Write `jfold/featurize/data/boltz2.npz` from Boltz-2's `~/.boltz/mols`. Run once:
 
     uv run python tools/tables/extract_boltz2.py
 """
@@ -25,7 +21,7 @@ for name in THREE_LETTER.values():
     by_name = {a.GetProp("name"): a for a in mol.GetAtoms()}
     atoms = [by_name[a] for a in const.ref_atoms[name]]
     conf_ids = [int(c.GetId()) for c in mol.GetConformers()]
-    # The view draws an index into this list, as upstream draws from `conf_ids`.
+    # jfold indexes conformers by position, upstream by `conf_ids`, so they must match.
     assert conf_ids == list(range(10)), (name, conf_ids)
     conformers = np.array(
         [[list(mol.GetConformer(i).GetAtomPosition(a.GetIdx())) for a in atoms] for i in conf_ids]

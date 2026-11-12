@@ -1,4 +1,4 @@
-"""A model's own sampler settings, as its upstream defines them."""
+"""Sampler settings that match each model's upstream implementation."""
 
 from collections.abc import Callable
 from typing import Literal
@@ -11,32 +11,20 @@ from jfold.sampling.core import SamplerSettings
 
 
 class UpstreamSampler(eqx.Module):
-    """Upstream's sampler for one model: its noise schedule, churn and frame policy.
-    Converters attach one to each model (`model.sampling`); `settings()` builds the
-    `SamplerSettings` that reproduce the upstream loop.
+    """One model's upstream sampler settings, which `settings()` turns into `SamplerSettings`.
 
-    The schedule is `schedules.Karras(rho)` over `sigma_data * [s_max, s_min]` on an
-    evenly spaced grid, ended by `end`:
-      - `"append_zero"`: `num_steps` levels, then a final step to 0 (EDM, Boltz).
-      - `"zero_last"`: `num_steps + 1` levels, the last replaced by 0 (the AF3 paper).
-      - `"none"`: `num_steps + 1` levels ending at `sigma_data * s_min`.
-    `max_sigma` (ESMFold2) then drops the levels above it.
-
-    The rest are `SamplerSettings`' fields of the same names, with no defaults here: each
-    converter states upstream's. (`update` is not among them: every upstream takes Euler
-    steps, `SamplerSettings`' default.)
-
-    Every converter centres on the real atoms (`masked_centering`). Upstreams that
-    centre on the plain mean (Boltz-2, ProMERA, OpenDDE) count their own padding atoms
-    in it; the two agree without padding, and with it only the masked mean keeps padding
-    from moving the sample.
+    The schedule is `schedules.Karras(rho)` from `sigma_data * s_max` to `sigma_data * s_min`.
+    `end` sets how it finishes: `"append_zero"` adds a final step to 0 (EDM, Boltz),
+    `"zero_last"` sets the last of `num_steps + 1` levels to 0 (AF3), and `"none"` stops at
+    `sigma_data * s_min`. If set, `max_sigma` (ESMFold2) drops the levels above it. The other
+    fields are as in `SamplerSettings`.
     """
 
     sigma_data: float = eqx.field(static=True)
     s_max: float = eqx.field(static=True)
     s_min: float = eqx.field(static=True)
     rho: float = eqx.field(static=True)
-    num_steps: int = eqx.field(static=True)  # upstream's default
+    num_steps: int = eqx.field(static=True)
     end: Literal["append_zero", "zero_last", "none"] = eqx.field(static=True)
     gamma_0: float = eqx.field(static=True)
     gamma_min: float = eqx.field(static=True)
@@ -51,7 +39,7 @@ class UpstreamSampler(eqx.Module):
     def sigmas(
         self, num_steps: int | None = None, *, schedule: schedules.Schedule | None = None
     ) -> np.ndarray:
-        """The noise levels, high to low; `schedule` replaces upstream's `Karras`."""
+        """Return the noise levels from high to low, using `schedule` instead of Karras if given."""
         n = self.num_steps if num_steps is None else num_steps
         schedule = schedules.Karras(rho=self.rho) if schedule is None else schedule
 
@@ -75,8 +63,8 @@ class UpstreamSampler(eqx.Module):
     def settings(
         self, num_steps: int | None = None, *, schedule: schedules.Schedule | None = None
     ) -> SamplerSettings:
-        """The upstream sampler's settings, `num_steps` steps (upstream's count by default;
-        fewer survive a `max_sigma` cap)."""
+        """Return `SamplerSettings` that reproduce the upstream sampler, with `num_steps` steps or
+        fewer if `max_sigma` is set."""
         return SamplerSettings(
             sigmas=self.sigmas(num_steps, schedule=schedule),
             gamma_0=self.gamma_0,

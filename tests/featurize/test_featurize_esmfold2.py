@@ -1,5 +1,4 @@
-"""`jfold.featurize.views.esmfold2` against upstream ESMFold2's featurization on the shared
-fixture systems (`tests/featurize/data/esmfold2_<system>.npz`)."""
+"""Test `jfold.featurize.views.esmfold2` against upstream ESMFold2's featurization."""
 
 import numpy as np
 import pytest
@@ -20,9 +19,7 @@ def test_esmfold2(name):
 
 @pytest.mark.parametrize("name", sorted(SYSTEMS))
 def test_esmfold2_model_inputs(name):
-    """The model adapter runs on the view's output: the embedder inputs match what the
-    upstream forward hands its embedder, and the ESMC layout and input match the packed
-    token inputs upstream builds."""
+    """Check that the model adapter's embedder and ESMC inputs match upstream's."""
     f = view.features(system(name))
     upstream = np.load(FIXTURES / f"esmfold2_{name}.npz")
     features = esmfold2.features(f)
@@ -30,7 +27,7 @@ def test_esmfold2_model_inputs(name):
     np.testing.assert_array_equal(token[:, :33], upstream["embed_res_type"])
     np.testing.assert_allclose(token[:, 33:66], upstream["embed_profile"], rtol=1e-6, atol=1e-7)
     np.testing.assert_allclose(token[:, 66], upstream["embed_deletion_mean"], rtol=1e-6)
-    # Checkpoints without MSA features zero both; the model does (`msa_profile`).
+    # Checkpoints without MSA features zero both, which jfold does in the model (`msa_profile`).
     np.testing.assert_array_equal(upstream["embed_profile_no_msa_features"], 0)
     np.testing.assert_array_equal(upstream["embed_deletion_mean_no_msa_features"], 0)
 

@@ -1,7 +1,4 @@
-"""End-to-end parity with the released Boltz-2 checkpoint: the trunk, one denoising step,
-confidence and distogram on a small complex featurized by Boltz itself (an MSA and a
-template on one chain, a cyclic second chain, pocket and contact constraints). Downloads
-weights; run with `pytest -m checkpoint`."""
+"""Compare jfold with the released Boltz-2 checkpoint on a small complex featurized by Boltz."""
 
 from pathlib import Path
 
@@ -24,7 +21,7 @@ KEY = jax.random.key(0)
 
 
 def _helix_cif(sequence: str, path: Path) -> None:
-    """An ideal α-helix (backbone and Cβ) for `sequence`, as chain A of an mmCIF."""
+    """Build an mmCIF with an ideal α-helix (backbone and Cβ) for `sequence` as chain A."""
     import gemmi
 
     radius = {"N": 1.55, "CA": 2.3, "C": 1.61}
@@ -74,8 +71,7 @@ def _helix_cif(sequence: str, path: Path) -> None:
 
 
 def _featurize(directory: Path, max_tokens: int | None = None, max_atoms: int | None = None):
-    """Boltz-2's inference features (batched torch tensors), padded to `max_tokens` and
-    `max_atoms` if given."""
+    """Return Boltz-2's batched torch features, padded to `max_tokens` and `max_atoms` if given."""
     import boltz.main as bm
 
     a, b = SEQUENCES
@@ -141,7 +137,7 @@ templates:
 
 
 def _reference():
-    """The released model as `jfold.pretrained` builds it (as `boltz predict` does)."""
+    """Load the released model the way `jfold.pretrained` and `boltz predict` build it."""
     from jfold import pretrained
 
     return pretrained.upstream("boltz2", checkpoint_path=CACHE / "boltz2_conf.ckpt")
@@ -157,8 +153,7 @@ def _trunk(model, features):
 
 @pytest.mark.parametrize("padding", [0, 9], ids=["unpadded", "padded"])
 def test_boltz2(tmp_path, padding):
-    """Parity on the real tokens and atoms; `padding` tokens (and 64 atoms) appended by
-    Boltz's own featurizer for our side, with garbage in the padded trunk state."""
+    """Check that jfold matches Boltz-2 on the real tokens and atoms with padding appended."""
     from jfold.convert import boltz2 as convert
     from jfold.models import boltz2
     from jfold.slots import TrunkInputs, TrunkState
@@ -172,14 +167,14 @@ def test_boltz2(tmp_path, padding):
     padded = feats
     if padding:
         padded = _featurize(tmp_path, num_tokens + padding, num_atoms + 64)
-        # Reference conformers are randomly placed per featurization; use the same ones.
+        # Each featurization places the reference conformers at random, so reuse the same ones.
         padded["ref_pos"][:, :num_atoms] = feats["ref_pos"]
     reference = _reference()
     atom_mask = feats["atom_pad_mask"][0].bool().numpy()
     x_noisy = 16 * np.random.default_rng(0).standard_normal((num_atoms, 3), dtype=np.float32)
     with torch.no_grad():
         s_inputs = reference.input_embedder(feats)
-        # The trunk (and distogram) alone: no sampling, no confidence on the input coords.
+        # Run only the trunk and distogram, without sampling or confidence.
         reference.skip_run_structure = True
         reference.confidence_prediction = False
         out = reference(feats, recycling_steps=NUM_RECYCLES - 1)
@@ -225,7 +220,7 @@ def test_boltz2(tmp_path, padding):
         "z": rel_err(state.z[:n, :n], z[0]),
     }
 
-    # Later stages from the reference trunk, so errors do not compound.
+    # Run the later stages from the reference trunk so errors do not compound.
     garbage = lambda x, axes: jnp.array(pad(x[0].numpy(), padding, axes))
     ref_state = TrunkState(s=garbage(s, (0,)), z=garbage(z, (0, 1)))
     ref_inputs = TrunkInputs(

@@ -1,4 +1,4 @@
-"""The atom encoder without coordinates (the trunk's input embedder) against each upstream."""
+"""Test the atom encoder without coordinates (the trunk's input embedder) against each upstream."""
 
 import functools
 
@@ -276,8 +276,7 @@ def _encode(encoder, features, ref_pos, ref_space_uid, atom_to_token, mask, num_
 @pytest.mark.parametrize("padding", [0, 40], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("case", CASES)
 def test_input_atom_encoder_matches_reference(case, padding):
-    """Per-token aggregates from the reference conformers alone match the upstream on the
-    real tokens, with masked garbage atoms (on a garbage token) appended."""
+    """Check that per-token aggregates from the reference conformers alone match the upstream."""
     module, run_reference, convert, features = CASES[case]()
     randomize(module, seed=0)
     encoder = convert(module)
@@ -552,8 +551,7 @@ def _embed(embedder, atoms, token_features, keep):
 @pytest.mark.parametrize("padding", [0, 40], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("case", EMBEDDERS)
 def test_input_embedder_matches_reference(case, padding):
-    """`s_inputs` matches the upstream on the real tokens, with masked garbage atoms on a
-    garbage token appended."""
+    """Check that `s_inputs` matches the upstream on the real tokens with garbage atoms appended."""
     from jfold.blocks.atoms import Atoms
 
     module, run_reference, convert, features, keep_fn = EMBEDDERS[case]()
@@ -580,7 +578,7 @@ def test_input_embedder_matches_reference(case, padding):
 
 
 def test_openfold3_trunk_init_matches_reference():
-    """OpenFold3's initial single and pair from `s_inputs`, relative positions and bonds."""
+    """Check OpenFold3's initial single and pair from `s_inputs`, relative positions and bonds."""
     from jfold.blocks.inputs import relative_position_features
 
     module, run_reference, _, _, _ = _embedder_openfold3()

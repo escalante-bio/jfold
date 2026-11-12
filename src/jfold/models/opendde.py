@@ -1,12 +1,6 @@
-"""OpenDDE: a Protenix-lineage model whose diffusion runs on structural tokens.
-
-The trunk, distogram and confidence heads work on residues, as in Protenix. Before
-diffusion, each residue's trunk outputs are copied to its structural tokens (a protein
-residue's backbone and side chain; a nucleotide's backbone and base; one token per ligand
-atom), conditioned on each token's role, refined by a small Pairformer, and denoised with an
-extra attention bias between structural tokens: the model is a `jfold.model.StructureModel`
-whose diffusion slot is `StructuralDiffusion`, with the structural tokens as the features'
-`extras`."""
+"""OpenDDE, a Protenix-derived model whose diffusion runs on structural tokens, such as a
+backbone and a side-chain token per residue. `StructuralDiffusion` expands the residue
+trunk's outputs to these tokens, which are stored in the features' `extras`."""
 
 import equinox as eqx
 import jax
@@ -22,18 +16,16 @@ from jfold.models.common import arrays
 from jfold.nn import LayerNorm, Linear
 from jfold.slots import AbstractDiffusionModule, Features, TrunkInputs, TrunkState
 
-# Each structural-token role's class (`opendde.data.tokenizer.STRUCTURAL_TOKEN_ROLES`):
-# 0 backbone (protein, DNA, RNA), 1 protein side chain, 2 nucleotide base, 3 none (an atom).
+# The class of each role in `opendde.data.tokenizer.STRUCTURAL_TOKEN_ROLES`. Class 0 is a
+# backbone (protein, DNA or RNA), 1 a protein side chain, 2 a nucleotide base and 3 an atom.
 ROLE_CLASS = (3, 0, 1, 0, 2, 0, 2)
-# The role-pair category of a (row class, column class) pair; 7 for any other pair.
+# The role-pair category of each (row class, column class) pair, with 7 for any other pair.
 ROLE_PAIR = ((0, 1, 4, 7), (2, 3, 7, 7), (5, 7, 6, 7), (7, 7, 7, 7))
 
 
 class StructuralTokens(eqx.Module):
-    """The structural tokens: each one's parent residue (a trunk token) and role, its
-    parent's neighbours along the chain (-1 at chain ends), the atoms assigned to
-    structural tokens, and the tokens' relative position features. `mask` is False for
-    padding."""
+    """Structural tokens, each with a parent residue, a role and its parent's chain
+    neighbours."""
 
     parent: Int[Array, " M"]
     role: Int[Array, " M"]
@@ -77,8 +69,7 @@ class StructuralPairFeatures(eqx.Module):
 
 
 class PairEmbedding(eqx.Module):
-    """A sum of learned vectors, one per pair relation: each boolean relation's table has a
-    row for false and one for true; the role-pair category has eight rows."""
+    """A sum of learned vectors, one per pair relation."""
 
     flags: Float[Array, "4 2 C"]
     role_pair: Float[Array, "8 C"]
@@ -90,10 +81,8 @@ class PairEmbedding(eqx.Module):
 
 
 class StructuralTokenExpander(eqx.Module):
-    """Residue trunk outputs to structural tokens: copy each token's parent residue, add
-    role embeddings to the singles and an MLP to the trunk single, project each pair by its
-    (row role, column role) and add relation embeddings. Also returns the scalar attention
-    bias between structural tokens."""
+    """Expand residue trunk outputs to structural tokens, also returning their attention
+    bias."""
 
     single_inputs_role: Float[Array, "R Ci"]
     single_role: Float[Array, "R Cs"]
@@ -125,7 +114,6 @@ class StructuralTokenExpander(eqx.Module):
         return s_inputs, s, z, self.attention_bias(pair)[..., 0]
 
     def _project(self, z: Float[Array, "M M Cz"], role: Int[Array, " M"]) -> Float[Array, "M M Cz"]:
-        """Each pair through the projection of its (row role, column role)."""
 
         def by_row_role(delta, r):
             weights = self.pair_projection[r][role]  # by column role: [M, out, in]
@@ -138,9 +126,8 @@ class StructuralTokenExpander(eqx.Module):
 
 
 class StructuralDiffusion(AbstractDiffusionModule[Features]):
-    """OpenDDE's diffusion slot: the residue trunk's outputs expanded to structural tokens
-    (`expander`, the features' `extras`), refined (`refiner`), and denoised by `diffusion`
-    on those tokens with the structural attention bias added."""
+    """OpenDDE's diffusion slot, which expands, refines and denoises on structural tokens.
+    """
 
     expander: StructuralTokenExpander
     diffusion: DiffusionModule
@@ -149,15 +136,15 @@ class StructuralDiffusion(AbstractDiffusionModule[Features]):
     def structural_trunk(
         self, features: Features, inputs: TrunkInputs, state: TrunkState
     ) -> tuple[Float[Array, "M Ci"], TrunkState, Float[Array, "M M"]]:
-        """The trunk outputs on structural tokens: `s_inputs`, the refined single and pair,
-        and the structural attention bias."""
+        """Return `s_inputs`, the refined single and pair, and the attention bias on
+        structural tokens."""
         tokens = features.extras
         s_inputs, s, z, bias = self.expander(
             tokens, features.asym_id, inputs.s_inputs, state.s, state.z
         )
         if self.refiner is not None:
-            # No key: the context is built without one, so a refiner with dropout switched
-            # on raises rather than drawing the same mask every time.
+            # The context is built without a key, so a refiner with dropout enabled raises
+            # an error instead of reusing one dropout mask every time.
             s, z = self.refiner(s, z, tokens.mask, bias[None])
         return s_inputs, TrunkState(s=s, z=z), bias
 
@@ -178,8 +165,7 @@ class StructuralDiffusion(AbstractDiffusionModule[Features]):
 
 
 def features(f: dict) -> Features:
-    """`Features` from an OpenDDE feature dict (`opendde.data` featurization; numpy arrays,
-    unbatched): Protenix's, with the structural tokens as `extras`."""
+    """Build Protenix's `Features` with OpenDDE's structural tokens as `extras`."""
     residues = protenix.features(f)
     a = arrays(f)
     parent = a["parent_residue_idx"]

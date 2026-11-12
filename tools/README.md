@@ -1,16 +1,16 @@
 # tools
 
-Scripts jfold itself never imports. Those in `fixtures/` and `tables/` run upstream code,
-so they need the upstream package installed. Run them from the repository root, e.g.
-`uv run python tools/fixtures/dump_boltz2.py`.
+Scripts that jfold does not import. The scripts in `fixtures/` and `tables/` run upstream
+code, so they need the upstream package installed. Run them from the repository root,
+for example `uv run python tools/fixtures/dump_boltz2.py`.
 
-- `fixtures/`: the featurization parity fixtures in `tests/featurize/data/`.
-  `dump_<model>.py` records upstream's feature dict for each test system;
+- `fixtures/` generates the featurization test fixtures in `tests/featurize/data/`.
+  Each `dump_<model>.py` saves upstream's features for every test system, and
   `make_templates.py` writes the template PDBs and `template_systems.json`.
-- `tables/`: the residue tables shipped in `src/jfold/featurize/data/`
-  (`extract_<model>.py`): each residue's atoms and reference conformers, as upstream
-  builds them, so featurization needs no upstream code.
+- `tables/` generates the residue tables in `src/jfold/featurize/data/`. Each
+  `extract_<model>.py` saves every residue's atoms and reference conformers as upstream
+  builds them, so featurization does not need upstream code.
 
-`model_table.py` writes `docs/models/README.md` from the released copies' `model.json`.
+`model_table.py` generates `docs/models/README.md` from the released models' `model.json`.
 
 `docs/upstream-featurization/<model>.md` describes each pipeline and its fixtures.

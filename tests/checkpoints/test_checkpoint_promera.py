@@ -1,7 +1,4 @@
-"""End-to-end parity with the released ProMERA checkpoint: the trunk, one denoising step,
-confidence and distogram on a small two-chain complex featurized by tinyprot. Downloads
-weights; run with `pytest -m checkpoint`. ProMERA's triangle updates exist only as
-cuequivariance CUDA kernels, so the reference runs on the GPU."""
+"""Compare jfold with the released ProMERA checkpoint on the GPU, where its triangle kernels run."""
 
 import os
 from pathlib import Path
@@ -31,7 +28,7 @@ def _trunk(model, features):
 
 
 def _reference():
-    """The released model, as `jfold.pretrained` builds it (from the Hugging Face cache)."""
+    """Load the released model from the Hugging Face cache, as `jfold.pretrained` does."""
     from huggingface_hub import hf_hub_download
 
     from jfold import pretrained
@@ -41,8 +38,7 @@ def _reference():
 
 
 def _batch():
-    """tinyprot features of the complex (single-sequence MSAs), finalized and collated as
-    ProMERA's inference does: a batch of one, atoms padded to a multiple of 32."""
+    """Featurize the complex with tinyprot, using single-sequence MSAs."""
     from promera.data.utils import collate
     from promera.inference.utils import finalize_feats
     from tinyprot import init
@@ -130,7 +126,7 @@ def test_promera():
         {k: v[0].numpy() for k, v in batch.items() if isinstance(v, torch.Tensor)}
     )
     errors = {}
-    # Standard residues drop their atom aggregate, so check it on its own.
+    # Check the atom aggregate separately because standard residues drop it.
     aggregate = model.input_embedder.encoder(features.atoms, features.token_features.shape[0])
     errors["aggregate"] = rel_err(aggregate, ref["aggregate"])
     inputs, state = eqx.filter_jit(_trunk)(model, features)
@@ -138,7 +134,7 @@ def test_promera():
     errors["s"] = rel_err(state.s, ref["s"])
     errors["z"] = rel_err(state.z, ref["z"])
 
-    # Later stages from the reference trunk, so errors do not compound.
+    # Run the later stages from the reference trunk so errors do not compound.
     ref_state = TrunkState(s=jnp.array(ref["s"]), z=jnp.array(ref["z"]))
     ref_inputs = type(inputs)(
         s_inputs=jnp.array(ref["s_inputs"]), s_init=inputs.s_init, z_init=inputs.z_init

@@ -1,7 +1,5 @@
-"""Primitives shared by every block.
-
-A module whose only randomness is dropout takes `key=None` while dropout is off (the
-default)."""
+"""Basic layers shared by every block. A module whose only randomness is dropout accepts
+`key=None` while dropout is off, which is the default."""
 
 from collections.abc import Callable, Sequence
 
@@ -12,7 +10,7 @@ from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 
 class Linear(eqx.Module):
-    """`x @ weight.T + bias`; the weight keeps torch's `[out, in]` layout."""
+    """Compute `x @ weight.T + bias`, with the weight in torch's `[out, in]` layout."""
 
     weight: Float[Array, "out in"]
     bias: Float[Array, " out"] | None = None
@@ -23,7 +21,7 @@ class Linear(eqx.Module):
 
 
 class LayerNorm(eqx.Module):
-    """Last-axis layer norm; the scale and offset are optional."""
+    """Layer norm over the last axis, with an optional scale and offset."""
 
     weight: Float[Array, " d"] | None
     bias: Float[Array, " d"] | None
@@ -39,9 +37,9 @@ class LayerNorm(eqx.Module):
 
 
 class Attention(eqx.Module):
-    """Gated multi-head attention: `softmax(q kᵀ / √c + bias) v` over the keys in
-    `key_mask`, gated per channel by `sigmoid(linear_g(q_x))`, then projected by
-    `linear_o`."""
+    """Return gated multi-head attention
+    `linear_o(softmax(q kᵀ / √c + bias) v * sigmoid(linear_g(q_x)))` over the keys in
+    `key_mask`."""
 
     linear_q: Linear
     linear_k: Linear
@@ -69,7 +67,7 @@ class Attention(eqx.Module):
 
 
 class PairBias(eqx.Module):
-    """Per-head attention bias from the pair: `linear(norm(z))`, heads first."""
+    """Compute the per-head attention bias `linear(norm(z))`, with heads first."""
 
     norm: LayerNorm
     linear: Linear  # Cz -> heads
@@ -79,7 +77,7 @@ class PairBias(eqx.Module):
 
 
 class Transition(eqx.Module):
-    """SwiGLU MLP behind a layer norm (AF3 Algorithm 11)."""
+    """Apply a layer norm and then a SwiGLU MLP, as in AF3 Algorithm 11."""
 
     norm: LayerNorm
     linear_a: Linear
@@ -92,7 +90,7 @@ class Transition(eqx.Module):
 
 
 class SwiGLU(eqx.Module):
-    """`linear_out(silu(linear_a(x)) * linear_b(x))`: `Transition` without its norm."""
+    """Return `linear_out(silu(linear_a(x)) * linear_b(x))`."""
 
     linear_a: Linear
     linear_b: Linear
@@ -103,7 +101,7 @@ class SwiGLU(eqx.Module):
 
 
 class NormLinear(eqx.Module):
-    """`linear(norm(x))`."""
+    """Return `linear(norm(x))`."""
 
     norm: LayerNorm
     linear: Linear
@@ -113,8 +111,8 @@ class NormLinear(eqx.Module):
 
 
 class SinglesToPair(eqx.Module):
-    """`z_ij` from a single representation: `linear_i(s_i) + linear_j(s_j)`, plus
-    Boltz-2's `product_out(product_i(s_i) * product_j(s_j))`."""
+    """Return `z_ij = linear_i(s_i) + linear_j(s_j)`, plus
+    `product_out(product_i(s_i) * product_j(s_j))` if set."""
 
     linear_i: Linear
     linear_j: Linear
@@ -130,7 +128,7 @@ class SinglesToPair(eqx.Module):
 
 
 class ReluMLP(eqx.Module):
-    """`x -> linear(relu(x))` for each linear in turn."""
+    """Apply `x = linear(relu(x))` for each linear layer in turn."""
 
     layers: tuple[Linear, ...]
 
@@ -141,7 +139,7 @@ class ReluMLP(eqx.Module):
 
 
 class ReluMLP2(eqx.Module):
-    """`linear_out(relu(linear_in(x)))`."""
+    """Return `linear_out(relu(linear_in(x)))`."""
 
     linear_in: Linear
     linear_out: Linear
@@ -151,11 +149,8 @@ class ReluMLP2(eqx.Module):
 
 
 class Dropout(eqx.Module):
-    """Dropout with its mask shared along `shared_axes`, scaled by `1 / (1 - rate)`.
-    OpenFold's rowwise dropout on a pair `[T, T, C]` shares the mask down the rows
-    (`(0,)`); Boltz's draws one value per row (`(1, 2)`). Off while `inference` is set (the
-    default); `eqx.nn.inference_mode(model, False)` turns it on everywhere in a model.
-    `key` may be None only while it is off."""
+    """Dropout with its mask shared along `shared_axes`, active only once
+    `eqx.nn.inference_mode(model, False)` sets `inference` to False."""
 
     rate: float = eqx.field(static=True)
     shared_axes: tuple[int, ...] = eqx.field(static=True)
@@ -174,15 +169,15 @@ class Dropout(eqx.Module):
 
 
 def split_key(key: PRNGKeyArray | None, num: int = 2) -> tuple[PRNGKeyArray | None, ...]:
-    """`num` keys from `key`, or `num` Nones from None."""
+    """Split `key` into `num` keys, or return `num` Nones if `key` is None."""
     if key is None:
         return (None,) * num
     return tuple(jax.random.split(key, num))
 
 
 def stack[M: eqx.Module](layers: Sequence[M]) -> M:
-    """Stack identical layers into one module whose arrays have a leading layer axis;
-    non-array fields are the first layer's."""
+    """Stack identical layers into one module with a leading layer axis, taking non-array
+    fields from the first layer."""
     return jax.tree.map(lambda *xs: jnp.stack(xs) if eqx.is_array(xs[0]) else xs[0], *layers)
 
 
@@ -193,9 +188,8 @@ def scan_layers[C, M: eqx.Module](
     *,
     key: PRNGKeyArray | None = None,
 ) -> C:
-    """Apply `f(layer, carry, key)` for each layer of a stacked module, with a fresh key
-    per layer (None for every layer without `key`), rematerializing each layer's
-    activations on the backward pass."""
+    """Apply `f(layer, carry, key)` for each layer of a stacked module, with a key per
+    layer and activations recomputed on the backward pass."""
     arrays, static = eqx.partition(layers, eqx.is_array)
     num_layers = jax.tree.leaves(arrays)[0].shape[0]
     keys = None if key is None else jax.random.split(key, num_layers)

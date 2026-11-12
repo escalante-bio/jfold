@@ -1,5 +1,5 @@
-"""OpenDDE (`opendde_v1`, and its antibody-antigen weights `opendde_abag.pt`), as
-`opendde`'s inference runner builds it."""
+"""OpenDDE (`opendde_v1` and the antibody-antigen weights `opendde_abag.pt`), built as
+`opendde`'s inference runner does."""
 
 from pathlib import Path
 
@@ -12,9 +12,7 @@ ARCHITECTURE = "opendde_v1"
 
 
 def configs():
-    """`opendde_v1`'s inference configs (`build_inference_config`), with the plain-PyTorch
-    triangle kernels and without the inference-time fusions (the converter reads plain torch
-    modules)."""
+    """Return the `opendde_v1` inference config, with plain-PyTorch kernels for the converter."""
     from opendde.config.inference import build_inference_config
 
     configs = build_inference_config(model_name=ARCHITECTURE, fill_required_with_null=True)
@@ -35,7 +33,6 @@ def _fetch(filename: str):
 
 
 def _build(checkpoint: Path):
-    """As the inference runner builds and loads it, on the CPU."""
     from opendde.model.opendde import OpenDDE
 
     cfg = configs()

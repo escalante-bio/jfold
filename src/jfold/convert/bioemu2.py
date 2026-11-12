@@ -1,6 +1,5 @@
-"""BioEmu2 (`bioemu2.biomoa`): the PairMixer trunk on the shared Pairformer and MSA blocks,
-and the dual-stream structure module on the shared diffusion transformer, with the pieces
-specific to BioEmu2 in `jfold.models.bioemu2`."""
+"""Convert BioEmu2 (`bioemu2.biomoa`) to the shared blocks plus the parts in
+`jfold.models.bioemu2`."""
 
 import dataclasses
 import inspect
@@ -55,11 +54,9 @@ from jfold.nn import (
 )
 from jfold.sampling import UpstreamSampler, masked_centering, rigid_align_stop_gradient
 
-# Trunk -----------------------------------------------------------------------------------------
-
 
 def triangle_multiplication(m) -> TriangleMultiplication:
-    """Any `TriangleMultiplication*` variant (they share weights and math)."""
+    """Convert any `TriangleMultiplication*` variant, since they share weights and math."""
     return TriangleMultiplication(
         norm_in=layer_norm(m.norm_in),
         linear_p=linear(m.p_in),
@@ -72,7 +69,7 @@ def triangle_multiplication(m) -> TriangleMultiplication:
 
 
 def transition(m) -> Transition:
-    """`Transition` with its input norm."""
+    """Convert a `Transition` that has an input norm."""
     return Transition(
         norm=layer_norm(m.norm),
         linear_a=linear(m.fc1),
@@ -82,7 +79,7 @@ def transition(m) -> Transition:
 
 
 def swiglu(m) -> SwiGLU:
-    """`Transition(use_norm=False)`."""
+    """Convert a `Transition(use_norm=False)`."""
     return SwiGLU(linear_a=linear(m.fc1), linear_b=linear(m.fc2), linear_out=linear(m.fc3))
 
 
@@ -96,7 +93,7 @@ def pairmixer_layer(m, *, transition_z="transition_z") -> PairMixerLayer:
 
 
 def pairmixer_stack(m) -> PairformerStack:
-    """`PairMixerModule`: pair-only PairMixer layers (the single passes through)."""
+    """Convert a `PairMixerModule`, whose PairMixer layers only update the pair."""
     return PairformerStack(layers=stack([pairmixer_layer(layer) for layer in m.layers]))
 
 
@@ -113,9 +110,8 @@ def pair_weighted_averaging(m) -> PairWeightedAveraging:
 
 
 def outer_product_mean(m) -> OuterProductMean:
-    """`OuterProductMean*`: it divides by the number of MSA rows with any real token, which
-    is the shared module's per-pair row count when the MSA mask is uniform along each row
-    (as BioEmu2 featurizes it)."""
+    """Convert any `OuterProductMean*`, whose row count matches the shared module's
+    because BioEmu2's MSA mask is uniform along rows."""
     w = array(m.proj_ab.weight)
     return OuterProductMean(
         norm=layer_norm(m.norm),
@@ -126,7 +122,7 @@ def outer_product_mean(m) -> OuterProductMean:
 
 
 def msa_layer(m) -> MSALayer:
-    """`PairMixerMSALayer`: MSA update, outer product mean, then a PairMixer layer."""
+    """Convert a `PairMixerMSALayer`."""
     return MSALayer(
         outer_product_mean=outer_product_mean(m.outer_product_mean),
         msa=MSAUpdate(
@@ -139,8 +135,7 @@ def msa_layer(m) -> MSALayer:
 
 
 def msa_module(m) -> MSAModule:
-    """`PairMixerMSAModule`, reading every row on every pass. Features come from
-    `jfold.models.bioemu2.msa_features`."""
+    """Convert a `PairMixerMSAModule`, which reads every MSA row on every pass."""
     return MSAModule(
         linear_msa=linear(m.msa_proj),
         linear_s=linear(m.s_proj),
@@ -150,9 +145,7 @@ def msa_module(m) -> MSAModule:
 
 
 def relative_positions(m) -> Linear:
-    """`FusedRelativePositionEncoder`, as a linear on
-    `jfold.blocks.inputs.relative_position_features` (whose blocks are one-hot residue,
-    token and chain offsets around the same-entity flag)."""
+    """Convert a `FusedRelativePositionEncoder`."""
     return Linear(
         weight=jnp.concatenate(
             [
@@ -182,7 +175,7 @@ def contact_conditioning(m) -> ContactConditioning:
 
 
 def method_conditioning(m) -> MethodConditioning:
-    """On one-hot methods (`jfold.models.bioemu2.Conditioning.method`)."""
+    """Convert the method conditioning on one-hot methods."""
     pair = None
     if m.pair_embedding is not None:
         pair = SinglesToPair(
@@ -192,7 +185,7 @@ def method_conditioning(m) -> MethodConditioning:
 
 
 def trunk_init(m) -> ConditionedTrunkInit:
-    """The initial single and pair of a `PairMixerSequenceEmbedder`."""
+    """Convert a `PairMixerSequenceEmbedder`'s initial single and pair."""
     return ConditionedTrunkInit(
         init=TrunkInit(
             linear_s=linear(m.s_init),
@@ -208,7 +201,7 @@ def trunk_init(m) -> ConditionedTrunkInit:
 
 
 def trunk(m) -> Trunk:
-    """One recycling iteration of a `PairMixerSequenceEmbedder`."""
+    """Convert one recycling iteration of a `PairMixerSequenceEmbedder`."""
     return Trunk(
         recycle_s=Recycle(norm=layer_norm(m.s_norm), linear=linear(m.s_recycle)),
         recycle_z=Recycle(norm=layer_norm(m.z_norm), linear=linear(m.z_recycle)),
@@ -218,17 +211,14 @@ def trunk(m) -> Trunk:
 
 
 def distogram(m) -> PairHead:
-    """`DistogramModule`: it symmetrizes before its projection."""
+    """Convert a `DistogramModule`, which symmetrizes before its projection."""
     return PairHead(linear=linear(m.distogram), symmetric=True)
 
 
-# Transformer layers ----------------------------------------------------------------------------
-
-
 def zero_adaln(cond, rows: slice, width: int, lns_scale: float = 1.0) -> ZeroAdaLN:
-    """adaLN-Zero from `Sequential(LayerNorm, SiLU, Linear)`, reading the `rows` of its
-    output (scale, shift, gate). The upstream's LayerNorm scaling,
-    `lns (norm(a) (1 + α) + β)`, is folded into the scale and shift."""
+    """Convert adaLN-Zero from the output `rows` of a
+    `Sequential(LayerNorm, SiLU, Linear)`, folding upstream's `lns (norm(a) (1 + α) + β)`
+    into the scale and shift."""
     w, b = array(cond[2].weight)[rows], array(cond[2].bias)[rows]
     scale = jnp.concatenate([jnp.full(width, lns_scale), jnp.full(width, lns_scale)])
     offset = jnp.concatenate([jnp.full(width, lns_scale - 1.0), jnp.zeros(width)])
@@ -242,13 +232,12 @@ def zero_adaln(cond, rows: slice, width: int, lns_scale: float = 1.0) -> ZeroAda
 
 
 def _pair_bias_attention(m):
-    """The `AttentionPairBias*` inside `ConditionedTransformerLayer.attention`."""
     m = getattr(m, "attention_layer", m)  # SlidingWindowAttentionLayer
     return m.pair_bias_attn
 
 
 def pair_bias_attention(m) -> Attention:
-    """`AttentionPairBias` (without `initial_norm`) on a normalized input."""
+    """Convert an `AttentionPairBias` without `initial_norm`."""
     if m.initial_norm:
         raise ValueError("expected AttentionPairBias without initial_norm")
     w, c = array(m.proj_qkv.weight), m.c_s
@@ -263,8 +252,7 @@ def pair_bias_attention(m) -> Attention:
 
 
 def conditioned_layer(m) -> DiffusionTransformerLayer:
-    """`ConditionedTransformerLayer` (or its sliding-window wrapper, unwrapped; `localize`
-    the stacked transformer for windows)."""
+    """Convert a `ConditionedTransformerLayer`, unwrapping a sliding-window wrapper."""
     m = getattr(m, "transformer_layer", m)
     width = m.transition.fc1.weight.shape[1]
     lns = float(m.lns_scale)
@@ -281,7 +269,7 @@ def conditioned_layer(m) -> DiffusionTransformerLayer:
 
 
 def conditioned_transformer(layers, windows: CenteredWindows | None = None) -> DiffusionTransformer:
-    """Stacked `ConditionedTransformerLayer`s; within atom `windows` if given."""
+    """Convert stacked `ConditionedTransformerLayer`s, within `windows` if given."""
     layers = [getattr(layer, "transformer_layer", layer) for layer in layers]
     attns = [_pair_bias_attention(layer.attention) for layer in layers]
     transformer = DiffusionTransformer(
@@ -293,15 +281,11 @@ def conditioned_transformer(layers, windows: CenteredWindows | None = None) -> D
     return transformer if windows is None else localize(transformer, windows)
 
 
-# Atoms -----------------------------------------------------------------------------------------
-
-
 def _windows(m) -> CenteredWindows:
     return CenteredWindows(queries=m.atoms_per_window_queries, keys=m.atoms_per_window_keys)
 
 
 def _embed_features(m) -> Linear:
-    """The atom feature vector (`jfold.models.bioemu2.atom_features`) -> atom single."""
     return Linear(
         weight=jnp.concatenate(
             [array(m.proj_atom_continuous.weight), embedding(m.embed_element).weight]
@@ -312,7 +296,7 @@ def _embed_features(m) -> Linear:
 
 
 def _pair_embedding(m) -> AtomPairEmbedding:
-    # The upstream offset is key minus query; jfold's is query minus key.
+    # Upstream's offset is key minus query, while jfold's is query minus key.
     return AtomPairEmbedding(
         linear_offset=negated_input(m.embed_atompair_ref_pos),
         linear_inv_sq_dist=linear(m.embed_atompair_ref_dist),
@@ -325,7 +309,7 @@ def _pair_mlp(m) -> ReluMLP:
 
 
 def atom_encoder(m) -> AtomAttentionEncoder:
-    """The input embedder's `AtomAttentionEncoder` (`structure_prediction=False`)."""
+    """Convert the input embedder's `AtomAttentionEncoder`, which has no coordinates."""
     if m.structure_prediction:
         raise ValueError("use atom_conditioning for the structure module's atom encoder")
     return AtomAttentionEncoder(
@@ -342,12 +326,11 @@ def atom_encoder(m) -> AtomAttentionEncoder:
 
 
 def input_embedder(m) -> InputEmbedder:
-    """`InputEmbedder`. Token features come from `jfold.models.bioemu2.token_features`."""
     return InputEmbedder(encoder=atom_encoder(m.atom_attention_encoder))
 
 
 def atom_conditioning(m) -> AtomConditioning:
-    """The structure module's `AtomAttentionEncoder` (`structure_prediction=True`)."""
+    """Convert the structure module's `AtomAttentionEncoder`, which reads coordinates."""
     frame = None
     if m.use_dynamics_conditioning:
         gate = None
@@ -372,11 +355,8 @@ def atom_conditioning(m) -> AtomConditioning:
     )
 
 
-# Structure module ------------------------------------------------------------------------------
-
-
 def single_conditioning(single, pairwise, sigma_data: float) -> SingleConditioning:
-    """`SingleConditioning` and `PairwiseConditioning`."""
+    """Convert `SingleConditioning` and `PairwiseConditioning`."""
     conditioning = DiffusionConditioning(
         norm_z=layer_norm(pairwise.dim_pairwise_init_proj[0]),
         linear_z=linear(pairwise.dim_pairwise_init_proj[1]),
@@ -426,7 +406,7 @@ def readout(m) -> Readout:
 
 
 def dual_stream_transformer(m) -> DualStreamTransformer:
-    """The stacked `DualStreamDiffusionLayer`s of a `DualStreamDiffusionModule`."""
+    """Convert the `DualStreamDiffusionLayer`s of a `DualStreamDiffusionModule`."""
     return DualStreamTransformer(
         atoms=conditioned_transformer([layer.atom_block for layer in m.layers], _windows(m)),
         tokens=conditioned_transformer([layer.token_block for layer in m.layers]),
@@ -435,7 +415,7 @@ def dual_stream_transformer(m) -> DualStreamTransformer:
 
 
 def dual_stream_module(m) -> DualStreamModule:
-    """`DualStreamDiffusionModule`."""
+    """Convert a `DualStreamDiffusionModule`."""
     return DualStreamModule(
         conditioning=single_conditioning(
             m.single_conditioner, m.pairwise_conditioner, m.sigma_data
@@ -450,8 +430,7 @@ def dual_stream_module(m) -> DualStreamModule:
 
 
 def bioemu2(m) -> StructureModel:
-    """A whole `BioMoaCModel`, without a confidence head. Inputs come from
-    `jfold.models.bioemu2.features`."""
+    """Convert a whole `BioMoaCModel`, which has no confidence head."""
     embedder = m.sequence_embedder
     if m.edm_schedule.sigma_data != m.structure_module.sigma_data:
         raise ValueError("the EDM schedule and the structure module disagree on sigma_data")
@@ -476,9 +455,8 @@ def bioemu2(m) -> StructureModel:
 
 
 def sampling(m, mode: str = "structure") -> UpstreamSampler:
-    """Upstream's `edm` preset for `mode` (`"structure"` or `"equilibrium"`, which
-    differ in `step_scale`), on the model's EDM schedule: re-centred, randomly rotated
-    and translated, the noisy sample aligned onto the denoised one."""
+    """Return the sampler settings of upstream's `edm` preset for `mode`, `"structure"`
+    or `"equilibrium"`."""
     from bioemu2.denoising.edm import edm_sampler
     from bioemu2.denoising.samplers import EDMSampler
 

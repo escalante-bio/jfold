@@ -1,5 +1,5 @@
-"""What each atom of a view's features is (chain, residue, atom name, element), so model
-outputs can be written as structures without decoding the features."""
+"""Describe each atom of a view's features by chain, residue, atom name and element, so
+model outputs can be written as structures without decoding the features."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -24,11 +24,8 @@ SYMBOLS = (
 
 @dataclass(frozen=True)
 class AtomSites:
-    """A view's real atoms, in the order of its features' atom axis (padding atoms, where a
-    view pads, come after them): `coords[:len(sites)]` are their positions. Per atom: the
-    chain id, residue name and number (1-based within the chain), atom name, atomic number,
-    and `token`, the index of its token in the features (for per-token values such as
-    pLDDT)."""
+    """A view's real atoms in feature order, ahead of any padding atoms, with `token`
+    indexing each atom's token."""
 
     chain_id: tuple[str, ...]
     residue_name: tuple[str, ...]
@@ -41,8 +38,7 @@ class AtomSites:
         return len(self.atom_name)
 
     def to_pdb(self, coords: np.ndarray, b_factor: np.ndarray | None = None) -> str:
-        """PDB text for `coords`: `[A, 3]`, or `[M, A, 3]` for M models. `b_factor`: a
-        value per atom (`[A]`, or `[M, A]`), 0 by default."""
+        """Write `coords` (`[A, 3]`, or `[M, A, 3]` for M models) as PDB text."""
         coords = np.asarray(coords, np.float64)
         single = coords.ndim == 2
         coords = coords[None] if single else coords
@@ -72,9 +68,8 @@ class AtomSites:
 
 
 def atom_sites(chains: Sequence[Chain], table: ResidueTable, *, oxt: bool = False) -> AtomSites:
-    """The sites of `chains` (in the view's token order), each residue's atoms as `table`
-    lists them. `oxt`: keep a table's `OXT` on each chain's last residue only (Protenix's
-    rule); otherwise every table atom is kept."""
+    """Return the atom sites of `chains`, keeping `OXT` only on each chain's last residue if
+    `oxt`."""
     chain_id, residue_name, residue_number, atom_name, element, token = ([] for _ in range(6))
     t = 0
     for chain in chains:

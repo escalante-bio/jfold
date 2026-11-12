@@ -1,4 +1,4 @@
-"""ESMFold2 (`esm.models.esmfold2`) and its ESMC language model (`esm.models.esmc`)."""
+"""Convert ESMFold2 (`esm.models.esmfold2`) and its ESMC language model."""
 
 import jax.numpy as jnp
 from equinox.nn import Identity
@@ -61,13 +61,11 @@ from jfold.sampling import UpstreamSampler, masked_centering, rigid_align
 
 
 def _split(weight, num: int) -> list[Linear]:
-    """Bias-free linears for the `num` equal parts of a weight's outputs."""
     return [Linear(weight=w) for w in jnp.split(array(weight), num)]
 
 
 def triangle_multiplication(m) -> TriangleMultiplication:
-    """`TriangleMultiplicativeUpdate` (or its `TriangleMultiplicativeBlock` engine): one
-    bundled projection gives the a and b projections, then their gates."""
+    """Convert a `TriangleMultiplicativeUpdate` or its engine."""
     m = getattr(m, "_engine", m)
     linear_p, linear_g = _split(m.proj_bundle.weight, 2)
     return TriangleMultiplication(
@@ -82,8 +80,7 @@ def triangle_multiplication(m) -> TriangleMultiplication:
 
 
 def transition(m) -> Transition:
-    """`Transition` or `PairTransition`: a layer norm and a SwiGLU with packed inputs (the
-    trunk's `Transition` adds its residual itself; jfold's layers add it)."""
+    """Convert a `Transition` or `PairTransition` without its residual."""
     linear_a, linear_b = _split(m.ffn.w12.weight, 2)
     return Transition(
         norm=layer_norm(m.norm), linear_a=linear_a, linear_b=linear_b, linear_out=linear(m.ffn.w3)
@@ -91,7 +88,7 @@ def transition(m) -> Transition:
 
 
 def pair_update(m) -> PairMixerLayer:
-    """`PairUpdateBlock`: triangle multiplications and a transition, no single track."""
+    """Convert a `PairUpdateBlock`."""
     return PairMixerLayer(
         tri_mul_out=triangle_multiplication(m.tri_mul_out),
         tri_mul_in=triangle_multiplication(m.tri_mul_in),
@@ -101,8 +98,8 @@ def pair_update(m) -> PairMixerLayer:
 
 
 def pair_stack(m) -> PairformerStack:
-    """`FoldingTrunk` (the trunk, its coda, the language model's encoder and the confidence
-    head's stack)."""
+    """Convert a `FoldingTrunk`, which upstream also uses for the coda, LM encoder and
+    confidence stack."""
     return PairformerStack(layers=stack([pair_update(block) for block in m.blocks]))
 
 
@@ -127,8 +124,7 @@ def pair_weighted_averaging(m) -> PairWeightedAveraging:
 
 
 def msa_layer(m) -> MSALayer:
-    """`MSAEncoderBlock`: the pair updated from the MSA first; a final block has no MSA
-    update."""
+    """Convert an `MSAEncoderBlock`, whose final block has no MSA update."""
     msa = None
     if not m.is_final_block:
         msa = MSAUpdate(
@@ -149,10 +145,8 @@ def msa_layer(m) -> MSALayer:
 
 
 def msa_module(m, *, max_rows: int = DEFAULT_MAX_ROWS) -> MSAModule:
-    """`MSAEncoder`. MSA features come from `jfold.models.esmfold2.msa_features`, laid out
-    `[S, T, ...]` (the upstream's `[T, S, ...]`, transposed). `max_rows`: the rows drawn per
-    loop, the query always among them (`fold`'s `msa_max_depth`, which overrides the
-    config's `msa_encoder.max_depth`)."""
+    """Convert an `MSAEncoder` drawing `max_rows` rows per pass, query included, as set
+    by `fold`'s `msa_max_depth`."""
     blocks = list(m.blocks)
     if not blocks[-1].is_final_block:
         raise ValueError("expected the last MSA block to skip its MSA update")
@@ -166,8 +160,7 @@ def msa_module(m, *, max_rows: int = DEFAULT_MAX_ROWS) -> MSAModule:
 
 
 def experimental_msa_layer(m) -> MSALayer:
-    """The experimental `MSAEncoderBlock`: the MSA updated first, then the pair from it
-    (outer product divided before its projection)."""
+    """Convert the experimental `MSAEncoderBlock`."""
     return MSALayer(
         outer_product_mean=outer_product_mean(m.outer_product_mean),
         msa=MSAUpdate(
@@ -185,7 +178,7 @@ def experimental_msa_layer(m) -> MSALayer:
 
 
 def experimental_msa(m, *, max_rows: int = DEFAULT_MAX_ROWS) -> TrackedMSA:
-    """The experimental `MSAEncoder`. MSA features and `max_rows` as for `msa_module`."""
+    """Convert the experimental `MSAEncoder`."""
     return TrackedMSA(
         module=MSAModule(
             linear_msa=linear(m.embed),
@@ -197,7 +190,7 @@ def experimental_msa(m, *, max_rows: int = DEFAULT_MAX_ROWS) -> TrackedMSA:
 
 
 def adaln(m) -> AdaLN:
-    """`AdaptiveLayerNorm`: the conditioning's norm has a scale and no offset."""
+    """Convert an `AdaptiveLayerNorm`, whose conditioning norm has a scale but no offset."""
     return AdaLN(
         norm_a=LayerNorm(weight=None, bias=None, eps=float(m.eps)),
         norm_s=LayerNorm(weight=array(m.s_scale), bias=None, eps=float(m.eps)),
@@ -234,7 +227,7 @@ def diffusion_transformer_layer(attn, trans) -> DiffusionTransformerLayer:
 
 
 def diffusion_transformer(m) -> DiffusionTransformer:
-    """The token `DiffusionTransformer` (conditioned)."""
+    """Convert the token-level `DiffusionTransformer`."""
     return DiffusionTransformer(
         pair_bias=stack(
             [
@@ -252,7 +245,6 @@ def diffusion_transformer(m) -> DiffusionTransformer:
 
 
 def _transition_layer(m) -> Transition:
-    """`TransitionLayer`: a layer norm and a SwiGLU."""
     return Transition(
         norm=layer_norm(m.norm),
         linear_a=linear(m.a_proj),
@@ -262,8 +254,8 @@ def _transition_layer(m) -> Transition:
 
 
 def diffusion_conditioning(m) -> DiffusionConditioning:
-    """`DiffusionConditioning`: the single is conditioned on `s_inputs` alone (pass a
-    zero-width trunk single)."""
+    """Convert `DiffusionConditioning`, which conditions on `s_inputs` alone, so pass a
+    zero-width trunk single."""
     return DiffusionConditioning(
         norm_z=layer_norm(m.z_input_norm),
         linear_z=linear(m.z_proj),
@@ -279,7 +271,7 @@ def diffusion_conditioning(m) -> DiffusionConditioning:
 
 
 def sliding_window_layer(m) -> SlidingWindowLayer:
-    """`SWAAtomBlock`."""
+    """Convert an `SWAAtomBlock`."""
     attn = m.attn
     linear_q, linear_k, linear_v = _split(attn.Wqkv.weight, 3)
     ffn_a, ffn_b = _split(m.ffn.w_up.weight, 2)
@@ -299,7 +291,7 @@ def sliding_window_layer(m) -> SlidingWindowLayer:
 
 
 def sliding_window_transformer(m) -> SlidingWindowTransformer:
-    """`SWAAtomTransformer`."""
+    """Convert an `SWAAtomTransformer`."""
     return SlidingWindowTransformer(
         layers=stack([sliding_window_layer(b) for b in m.blocks]),
         rope=Rope3D(
@@ -313,9 +305,8 @@ def sliding_window_transformer(m) -> SlidingWindowTransformer:
 
 
 def atom_encoder(m) -> AtomEncoder:
-    """`EsmFold2AtomEncoder`. Its coordinate projection takes the scaled noisy positions
-    and a previous prediction the upstream always passes as zeros; only the first part is
-    kept. Atom features come from `jfold.models.esmfold2.atom_features`."""
+    """Convert an `EsmFold2AtomEncoder`, keeping only the noisy-position columns of its
+    coordinate projection."""
     linear_r = None
     if m.structure_prediction:
         linear_r = Linear(weight=array(m.coords_linear.weight[:, :3]))
@@ -329,7 +320,7 @@ def atom_encoder(m) -> AtomEncoder:
 
 
 def atom_decoder(m) -> AtomDecoder:
-    """`EsmFold2AtomDecoder`."""
+    """Convert an `EsmFold2AtomDecoder`."""
     return AtomDecoder(
         linear_a=linear(m.token_to_atom_linear),
         transformer=sliding_window_transformer(m.atom_transformer),
@@ -339,7 +330,7 @@ def atom_decoder(m) -> AtomDecoder:
 
 
 def diffusion_module(m) -> DiffusionModule:
-    """`DiffusionModule` (the structure head's score model)."""
+    """Convert the structure head's `DiffusionModule`."""
     return DiffusionModule(
         conditioning=diffusion_conditioning(m.conditioning),
         encoder=atom_encoder(m.atom_encoder),
@@ -352,16 +343,13 @@ def diffusion_module(m) -> DiffusionModule:
 
 
 def relative_positions(m) -> Linear:
-    """`ResIdxAsymIdSymIdEntityIdEncoding`'s projection of
-    `jfold.blocks.inputs.relative_position_features` (with chain offsets between chains:
-    `chain_offset=asym_id[:, None] != asym_id[None, :]`)."""
+    """Convert the relative position projection, whose features need
+    `chain_offset=asym_id[:, None] != asym_id[None, :]`."""
     return linear(m.embed)
 
 
 def confidence_module(m) -> ConfidenceModule:
-    """`ConfidenceHead` of the release or experimental model (logits; the expected values
-    and pTM are reductions of them). The experimental head has no PDE or resolved heads and
-    no norm before its PAE head."""
+    """Convert the `ConfidenceHead` of the release or experimental model."""
     pae_norm = getattr(m, "pae_ln", None)
     return ConfidenceModule(
         norm_s_inputs=layer_norm(m.s_inputs_norm),
@@ -395,7 +383,7 @@ def confidence_module(m) -> ConfidenceModule:
 
 
 def language_model_pair(m) -> LanguageModelPair:
-    """`LanguageModelShim`."""
+    """Convert a `LanguageModelShim`."""
     to_pair, norm_out = m.base_z_mlp
     return LanguageModelPair(
         norm_hidden=layer_norm(m.base_z_linear[0]),
@@ -409,14 +397,13 @@ def language_model_pair(m) -> LanguageModelPair:
 
 
 def _fused_norm(m) -> LayerNorm:
-    """The layer norm of a Transformer Engine-style fused module."""
     return LayerNorm(
         weight=array(m.layer_norm_weight), bias=array(m.layer_norm_bias), eps=float(m.eps)
     )
 
 
 def esmc_layer(m) -> ESMCLayer:
-    """`EsmcUnifiedTransformerBlock` (pure-PyTorch modules, SwiGLU feed-forward)."""
+    """Convert an `EsmcUnifiedTransformerBlock` built from pure-PyTorch modules."""
     attn, ffn = m.attn, m.ffn
     linear_q, linear_k, linear_v = _split(attn.layernorm_qkv.weight, 3)
     linear_a, linear_b = _split(ffn.fc1_weight, 2)
@@ -440,7 +427,7 @@ def esmc_layer(m) -> ESMCLayer:
 
 
 def esmc(m) -> ESMC:
-    """`EsmcModel`, built without CUDA kernels (its pure-PyTorch modules)."""
+    """Convert an `EsmcModel` built without CUDA kernels."""
     return ESMC(
         embed=embedding(m.embed),
         layers=stack([esmc_layer(b) for b in m.transformer.blocks]),
@@ -450,17 +437,17 @@ def esmc(m) -> ESMC:
 
 
 def masked_lm_head(m) -> MaskedLMHead:
-    """`EsmcForMaskedLM.lm_head` (Linear, GELU, LayerNorm, Linear)."""
+    """Convert `EsmcForMaskedLM.lm_head`."""
     return MaskedLMHead(dense=linear(m[0]), norm=layer_norm(m[2]), output=linear(m[3]))
 
 
 def esmc_for_masked_lm(m) -> ESMCForMaskedLM:
-    """`EsmcForMaskedLM`: ESMC and its head."""
+    """Convert `EsmcForMaskedLM`."""
     return ESMCForMaskedLM(head=masked_lm_head(m.lm_head), esmc=esmc(m.esmc))
 
 
 def parcae(m) -> Parcae:
-    """The Parcae recurrence's parameters on `EsmFold2Model`."""
+    """Convert the Parcae recurrence's parameters stored on `EsmFold2Model`."""
     return Parcae(
         norm=layer_norm(m.parcae_input_norm),
         log_a=array(m.parcae_log_a),
@@ -471,9 +458,8 @@ def parcae(m) -> Parcae:
 
 
 def esmfold2(m) -> StructureModel:
-    """A whole `EsmFold2Model` (release type), without its ESMC backbone (`trunk_init.esmc`:
-    convert it with `esmc` and attach it, as `jfold.pretrained` does). The release type
-    always reads the MSA profile (it ignores `disable_msa_features`)."""
+    """Convert a release-type `EsmFold2Model` without its ESMC backbone, which `esmc`
+    converts for `trunk_init.esmc`."""
     config = m.config
     if m.msa_encoder is not None and not config.msa_encoder.overwrite:
         raise NotImplementedError("MSA encoder adding to the pair (overwrite=False)")
@@ -505,9 +491,8 @@ def esmfold2(m) -> StructureModel:
 
 
 def sampling(head, *, max_sigma: float | None = 256.0) -> UpstreamSampler:
-    """`DiffusionStructureHead.sample`'s settings, with `fold`'s default cap on the
-    starting noise level (`max_inference_sigma`): re-centred, randomly rotated and
-    translated, the noisy sample aligned onto the denoised one (with gradients)."""
+    """Return the sampler settings of `DiffusionStructureHead.sample`, with `fold`'s
+    default `max_sigma`."""
     return UpstreamSampler(
         sigma_data=float(head.sigma_data),
         s_max=float(head.inference_s_max),
@@ -528,15 +513,14 @@ def sampling(head, *, max_sigma: float | None = 256.0) -> UpstreamSampler:
 
 
 def lm_dropout(rate: float) -> Dropout | Identity:
-    """ESMFold2's dropout on the language model's pair: elementwise, and on at inference
-    (upstream applies it with `training=True`)."""
+    """Return ESMFold2's elementwise dropout on the language model's pair, which upstream
+    keeps on at inference."""
     return Dropout(float(rate), (), inference=False) if rate else Identity()
 
 
 def esmfold2_experimental(m) -> StructureModel:
-    """A whole `EsmFold2ExperimentalModel`, without its ESMC backbone (`trunk_init.esmc`:
-    convert it with `esmc` and attach it, as `jfold.pretrained` does). Its token features
-    carry the MSA profile unless the config disables MSA features."""
+    """Convert an `EsmFold2ExperimentalModel` without its ESMC backbone, which `esmc`
+    converts for `trunk_init.esmc`."""
     return StructureModel(
         input_embedder=InputEmbedder(
             encoder=atom_encoder(m.inputs_embedder.atom_attention_encoder),

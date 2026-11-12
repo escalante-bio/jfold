@@ -1,7 +1,4 @@
-"""Mol-1's residue table (`jfold/featurize/data/mol1.npz`) from its own CCD RDKit pickle
-(`$MOL_ROOT_DIR/common/components.cif.rdkit_mol.pkl`, default `~/.cache/jfold/mol1`, where
-`tests/checkpoints/test_checkpoint_mol1.py` downloads it): the same layout as
-`extract_protenix.py`, with Mol-1's conformers. Needs the `molence` package; run once:
+"""Write `jfold/featurize/data/mol1.npz` from Mol-1's CCD RDKit pickle in `$MOL_ROOT_DIR`. Run once:
 
     LAYERNORM_TYPE=torch uv run python tools/tables/extract_mol1.py
 """

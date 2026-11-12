@@ -1,15 +1,6 @@
-"""ESMFold2's model-specific pieces: the sliding-window atom transformer with 3D RoPE, its
-atom encoder and decoder, the outer product mean's count clamp, the confidence head's
-row pooling, the ESMC language model and its pair projection, and the Parcae recurrence
-around the pair trunk.
-
-The rest (the pair trunk, MSA modules, diffusion transformer and conditioning, relative
-positions, confidence heads, the experimental type's recycling) runs on the shared blocks.
-Both model types are a `jfold.model.StructureModel`: the release type's trunk is
-`ParcaeTrunk`, the experimental type's `RecyclingPairTrunk`. The trunk init holds ESMC,
-which it runs on the features' sequence (`LanguageModelInput`, their `extras`) unless they
-carry precomputed states. The trunk is pair-only: its state carries `s_inputs` as the
-single, unchanged. Inputs are unbatched, with masks that are False for padding."""
+"""ESMFold2's model-specific pieces: the sliding-window atom transformer with 3D RoPE, the
+ESMC language model, the confidence head's row pooling and the Parcae recurrence around the
+pair trunk. The trunk only updates the pair, so its state keeps `s_inputs` as the single."""
 
 import math
 
@@ -68,8 +59,8 @@ def atom_features(
     ref_element: Int[Array, " N"],
     ref_atom_name_chars: Int[Array, "N 4"],
 ) -> Float[Array, "N 389"]:
-    """The atom feature vector ESMFold2's encoders embed: position, charge, mask, element
-    (128 classes) and name characters (4 x 64 classes), one-hots zero for padding."""
+    """Build the atom feature vector that ESMFold2's encoders embed, with one-hots zeroed
+    for padding."""
     real = mask[:, None].astype(jnp.float32)
     return jnp.concatenate(
         [
@@ -88,7 +79,6 @@ def _rms_norm(x: Float[Array, "... d"]) -> Float[Array, "... d"]:
 
 
 def _rotate(x: Float[Array, "N H D"], cos: Float[Array, "N R"], sin: Float[Array, "N R"]):
-    """Rotary embedding on the first `2R` channels of each head, halves rotated together."""
     rot = 2 * cos.shape[-1]
     cos, sin = jnp.tile(cos, 2)[:, None], jnp.tile(sin, 2)[:, None]
     x_rot, x_pass = x[..., :rot], x[..., rot:]
@@ -98,9 +88,8 @@ def _rotate(x: Float[Array, "N H D"], cos: Float[Array, "N R"], sin: Float[Array
 
 
 class Rope3D(eqx.Module):
-    """Rotary angles from each atom's reference position (per axis) and conformer id,
-    zero-padded to half a head; the cosines and sines are rounded to bfloat16, as the
-    model was trained."""
+    """Rotary angles from each atom's reference position and conformer id, rounded to
+    bfloat16 as in training."""
 
     head_dim: int = eqx.field(static=True)
     spatial_pairs: int = eqx.field(static=True)  # per axis
@@ -132,9 +121,8 @@ class Rope3D(eqx.Module):
 
 
 class SlidingWindowAttention(eqx.Module):
-    """Gated self-attention over atoms, each attending to the real atoms within
-    `half_window` places of it in the sequence of real atoms; queries and keys are
-    RMS-normalized and rotated by `Rope3D`'s angles."""
+    """Gated self-attention from each atom to the real atoms within `half_window` places of
+    it."""
 
     linear_q: Linear
     linear_k: Linear
@@ -156,7 +144,7 @@ class SlidingWindowAttention(eqx.Module):
         q = _rotate(_rms_norm(heads(self.linear_q(x))), cos, sin)
         k = _rotate(_rms_norm(heads(self.linear_k(x))), cos, sin)
         v = heads(self.linear_v(x))
-        # Real atoms first, in order: windows then count real atoms only.
+        # Sort real atoms first, keeping their order, so that windows count only real atoms.
         order = jnp.argsort(~mask, stable=True)
         q, k, v, m = q[order], k[order], v[order], mask[order]
         windows = CenteredWindows(queries=self.block, keys=self.block + 2 * self.half_window)
@@ -172,8 +160,7 @@ class SlidingWindowAttention(eqx.Module):
 
 
 class SlidingWindowLayer(eqx.Module):
-    """adaLN-Zero block: RMS norms scaled, shifted and gated from the atom single through
-    one modulation per layer, around sliding-window attention and a SwiGLU."""
+    """An adaLN-Zero block around sliding-window attention and a SwiGLU."""
 
     modulation: Linear  # silu(c) -> 6 Ca: shift, scale, gate for attention, then the FFN
     attention: SlidingWindowAttention
@@ -192,9 +179,8 @@ class SlidingWindowLayer(eqx.Module):
 
 
 class SlidingWindowTransformer(eqx.Module):
-    """Identical `SlidingWindowLayer`s, stacked and scanned. `modulations` and the rotary
-    angles depend only on the atom single and reference conformers, so a sampler computes
-    them once."""
+    """Stacked `SlidingWindowLayer`s, whose modulations and rotary angles a sampler computes
+    once."""
 
     layers: SlidingWindowLayer  # stacked
     rope: Rope3D
@@ -217,7 +203,7 @@ class SlidingWindowTransformer(eqx.Module):
 
 
 class AtomContext(eqx.Module):
-    """What the atom transformer reads that does not depend on noisy positions."""
+    """The atom transformer's inputs that do not depend on the noisy positions."""
 
     single: Float[Array, "N Ca"]
     rope: tuple[Float[Array, "N R"], Float[Array, "N R"]]
@@ -225,9 +211,8 @@ class AtomContext(eqx.Module):
 
 
 class AtomEncoder(eqx.Module):
-    """Atom features, normalized, through the sliding-window transformer and averaged per
-    token. With `linear_r` (the diffusion module's encoder) the noisy positions are added
-    to the queries."""
+    """Encode atoms and average them per token, adding the noisy positions to the queries if
+    `linear_r` is set."""
 
     embed_features: Linear  # atom feature vector -> Ca
     norm: LayerNorm
@@ -251,7 +236,8 @@ class AtomEncoder(eqx.Module):
         num_tokens: int,
         r: Float[Array, "N 3"] | None = None,
     ) -> tuple[Float[Array, "T Ct"], Float[Array, "N Ca"]]:
-        """Per-token aggregates, and the atom queries for the decoder's skip."""
+        """Return per-token aggregates and atom queries for the decoder's skip connection.
+        """
         q = context.single
         if self.linear_r is not None:
             q = q + self.linear_r(r)
@@ -261,8 +247,7 @@ class AtomEncoder(eqx.Module):
 
 
 class AtomDecoder(eqx.Module):
-    """Token updates broadcast to atoms, the sliding-window transformer, and a position
-    update per atom."""
+    """Decode token updates to a position update per atom."""
 
     linear_a: Linear  # token width -> Ca
     transformer: SlidingWindowTransformer
@@ -283,9 +268,8 @@ class AtomDecoder(eqx.Module):
 
 
 class InputEmbedder(AbstractInputEmbedder[Features]):
-    """`s_inputs`: the atom encoder's per-token aggregates, then the token features.
-    Without `msa_profile` (checkpoints with `disable_msa_features`) the token features' MSA
-    profile and deletion mean are zero."""
+    """Compute `s_inputs`, zeroing the MSA profile and deletion mean if `msa_profile` is
+    false."""
 
     encoder: AtomEncoder  # without noisy positions
     msa_profile: bool = eqx.field(static=True, default=True)
@@ -305,8 +289,7 @@ def token_features(
     deletion_mean: Float[Array, " T"],
     mask: Bool[Array, " T"],
 ) -> Float[Array, "T 67"]:
-    """The token features after the atom aggregates: residue type (a probability vector
-    over ESMFold2's 33 classes, zero for padding), MSA profile and deletion mean."""
+    """Build the token features, with the residue type zeroed for padding."""
     res_type = res_type * mask[:, None]
     return jnp.concatenate([res_type, profile, deletion_mean[:, None]], axis=-1)
 
@@ -323,14 +306,13 @@ class DiffusionContext(eqx.Module):
 
     @property
     def atom_mask(self) -> Bool[Array, " N"]:
-        """The atoms the denoiser moves: what a sampler centres and aligns on."""
+        """The atoms the denoiser moves, which a sampler centres and aligns on."""
         return self.atoms.mask
 
 
 class DiffusionModule(AbstractDiffusionModule[Features]):
-    """AF3 Algorithm 20 with EDM preconditioning, on ESMFold2's atom encoder and decoder.
-    The single is conditioned on `s_inputs` alone (no trunk single), and the atom
-    encoder does not see the trunk."""
+    """AF3 Algorithm 20 with ESMFold2's atom encoder and decoder, conditioned on `s_inputs`
+    without the trunk single."""
 
     conditioning: DiffusionConditioning
     encoder: AtomEncoder
@@ -367,7 +349,6 @@ class DiffusionModule(AbstractDiffusionModule[Features]):
         x_noisy: Float[Array, "N 3"],
         t: Float[Array, ""],
     ) -> Float[Array, "N 3"]:
-        """The denoised positions at noise level `t`."""
         atoms, sigma_data = context.atoms, self.sigma_data
         no_trunk = jnp.zeros((context.s_inputs.shape[0], 0), context.s_inputs.dtype)
         s = self.conditioning.single(no_trunk, context.s_inputs, t)
@@ -384,8 +365,8 @@ class DiffusionModule(AbstractDiffusionModule[Features]):
 
 
 class ClampedOuterProductMean(eqx.Module):
-    """The outer product mean, projected and then divided by the number of real rows
-    (at least one), bias included."""
+    """The outer product mean, with the projection's bias also divided by the real row count
+    (at least one)."""
 
     norm: LayerNorm
     linear_a: Linear
@@ -405,14 +386,13 @@ def msa_features(
     deletion_value: Float[Array, "S T"],
     msa_mask: Bool[Array, "S T"],
 ) -> Float[Array, "S T 35"]:
-    """The MSA feature vector: residue (a probability vector over 33 classes, zero where
-    masked), has-deletion, deletion value."""
+    """Build the MSA feature vector, with residues zeroed where masked."""
     residue = msa * msa_mask[..., None]
     return jnp.concatenate([residue, has_deletion[..., None], deletion_value[..., None]], -1)
 
 
 class RowAttentionPooling(eqx.Module):
-    """A single from the pair: each row's attention-weighted mean over real columns."""
+    """Pool the pair into a single by attention over each row's real columns."""
 
     linear_score: Linear  # Cz -> 1
     linear_out: Linear  # Cz -> Cs
@@ -423,11 +403,8 @@ class RowAttentionPooling(eqx.Module):
 
 
 class ConfidenceModule(AbstractConfidenceModule[Features]):
-    """ESMFold2's confidence head: the trunk pair plus embeddings of `s_inputs`, the
-    relative positions and bonds, and the predicted distances, through a pair stack (its
-    output added back to its input); a single pooled from the pair rows feeds per-atom
-    pLDDT and resolved heads. The experimental model's head has neither PDE nor resolved
-    logits (None in its `ConfidenceLogits`)."""
+    """ESMFold2's confidence head, which pools a single from the refined pair for the
+    per-atom heads. The experimental model has no PDE or resolved heads."""
 
     norm_s_inputs: LayerNorm
     norm_z: LayerNorm
@@ -468,8 +445,7 @@ class ConfidenceModule(AbstractConfidenceModule[Features]):
 
 
 class ESMCLayer(eqx.Module):
-    """A pre-norm transformer block of ESMC: ungated attention with layer-normed queries
-    and keys and rotary positions, then a SwiGLU transition, each residual scaled down."""
+    """A pre-norm ESMC transformer block with rotary positions and scaled-down residuals."""
 
     norm: LayerNorm
     linear_q: Linear
@@ -498,8 +474,8 @@ class ESMCLayer(eqx.Module):
 
 
 class ESMC(eqx.Module):
-    """The ESMC protein language model, returning every layer's input and the final
-    normalized output."""
+    """The ESMC language model, returning every layer's input and the final normalised
+    output."""
 
     embed: Linear  # token probability vectors -> D
     layers: ESMCLayer  # stacked
@@ -514,9 +490,7 @@ class ESMC(eqx.Module):
         *,
         key: PRNGKeyArray | None = None,
     ) -> Float[Array, "layers+1 L D"]:
-        """`tokens`: probability vectors over ESMC's vocabulary (`lm_input`).
-        `sequence_id`: which chain each position is in; positions attend within their
-        chain."""
+        """Run ESMC, with positions attending only within their `sequence_id`."""
         x = self.embed(tokens)
         head_dim = x.shape[-1] // self.layers.num_heads
         inv_freq = 1.0 / self.rope_base ** (
@@ -534,8 +508,7 @@ class ESMC(eqx.Module):
         return jnp.concatenate([hidden, self.norm(x)[None]])
 
 
-# ESMC's vocabulary (`esm`'s `EsmSequenceTokenizer`): its token for each special and
-# residue letter; 64 embedding rows.
+# ESMC's token ids, from `esm`'s `EsmSequenceTokenizer`.
 ESMC_VOCAB: dict[str, int] = {
     token: i
     for i, token in enumerate(
@@ -545,8 +518,7 @@ ESMC_VOCAB: dict[str, int] = {
 
 
 class MaskedLMHead(eqx.Module):
-    """ESMC's masked-language-model head (`EsmcForMaskedLM.lm_head`): a linear layer, GELU,
-    layer norm and a linear layer to the vocabulary."""
+    """ESMC's masked-language-model head (`EsmcForMaskedLM.lm_head`)."""
 
     dense: Linear
     norm: LayerNorm
@@ -557,12 +529,11 @@ class MaskedLMHead(eqx.Module):
 
 
 class ESMCForMaskedLM(eqx.Module):
-    """ESMC with its masked-language-model head: logits over the vocabulary at every
-    position of `tokens` (probability vectors, so a soft sequence's gradient reaches them;
-    mask a position with `ESMC_VOCAB["<mask>"]`)."""
+    """ESMC with its masked-language-model head, taking probability vectors so a soft
+    sequence gets gradients."""
 
     head: MaskedLMHead
-    # None only as stored: `jfold.pretrained` attaches the shared ESMC on loading.
+    # `jfold.pretrained` attaches the shared ESMC when loading.
     esmc: ESMC | None = None
 
     def __call__(
@@ -573,8 +544,8 @@ class ESMCForMaskedLM(eqx.Module):
         *,
         key: PRNGKeyArray | None = None,
     ) -> Float[Array, "L V"]:
-        """`sequence_id`: which chain each position is in (one chain by default); `mask`:
-        the positions attended to (all by default)."""
+        """Return logits, treating all positions as one chain and attending to all by
+        default."""
         if self.esmc is None:
             raise ValueError("this model has no ESMC: load it with `jfold.pretrained`")
         length = tokens.shape[0]
@@ -584,8 +555,7 @@ class ESMCForMaskedLM(eqx.Module):
 
 
 class LanguageModelPair(eqx.Module):
-    """The pair from the language model's hidden states: each layer projected, combined
-    by learned softmax weights, then an outer product and difference through an MLP."""
+    """Build a pair from a softmax-weighted mix of the language model's layer states."""
 
     norm_hidden: LayerNorm
     linear_hidden: Linear  # D -> Cz
@@ -608,8 +578,8 @@ class LanguageModelPair(eqx.Module):
 
 
 class Parcae(eqx.Module):
-    """The pair trunk's linear recurrence: each loop decays the state by `a` and injects
-    `B norm(input)` before the pair stack; `readout` maps the final state out."""
+    """The pair trunk's linear recurrence, which decays the state and adds `B norm(input)`
+    each loop."""
 
     norm: LayerNorm
     log_a: Float[Array, " Cz"]
@@ -626,10 +596,8 @@ class Parcae(eqx.Module):
 
 
 class LanguageModelInput(eqx.Module):
-    """ESMFold2's language-model input (`Features.extras`): ESMC's precomputed states per
-    token (`hidden`, zero off-protein), or ESMC's input for the trunk init to run it on
-    (`lm_input`): residue probability vectors in ESMC's vocabulary, each row's chain, each
-    token's row."""
+    """ESMFold2's language-model input: either precomputed ESMC states or ESMC's input for
+    the trunk init to run."""
 
     hidden: Float[Array, "layers T D"] | None = None
     tokens: Float[Array, "L V"] | None = None
@@ -638,28 +606,25 @@ class LanguageModelInput(eqx.Module):
 
 
 class TrunkExtras(eqx.Module):
-    """What ESMFold2's trunk, diffusion and confidence modules read beyond `TrunkInputs`
-    (its `extras`), computed once per forward pass."""
+    """What the trunk, diffusion and confidence modules read beyond `TrunkInputs`."""
 
     relative_positions: Float[Array, "T T Cz"]  # embedded
     bonds: Float[Array, "T T Cz"]  # embedded
     lm_pair: Float[Array, "T T Cz"]
-    msa_features: Float[Array, "S T 35"] | None  # column-masked, as every loop reads them
+    msa_features: Float[Array, "S T 35"] | None  # with masked columns, as every loop reads them
     msa_mask: Bool[Array, "S T"] | None
 
 
 def mask_msa_columns(
     msa_mask: Bool[Array, "S T"], rate: float, key: PRNGKeyArray
 ) -> Bool[Array, "S T"]:
-    """`msa_mask` with a random `rate` of the token columns masked in every row but the
-    query (row 0)."""
+    """Mask a random fraction `rate` of token columns in every MSA row except the query."""
     keep = jax.random.uniform(key, msa_mask.shape[1:]) >= rate
     return msa_mask & (keep[None, :] | (jnp.arange(msa_mask.shape[0]) == 0)[:, None])
 
 
 def language_model_hidden(esmc: ESMC | None, features: Features) -> Float[Array, "layers T D"]:
-    """ESMC's states per token: the features' precomputed ones, else ESMC run on their
-    sequence (so a soft sequence's gradient reaches ESMC)."""
+    """Return the features' precomputed ESMC states, or else run ESMC on their sequence."""
     lm = features.extras
     if lm.hidden is not None:
         return lm.hidden
@@ -675,21 +640,18 @@ def language_model_hidden(esmc: ESMC | None, features: Features) -> Float[Array,
 
 
 class TrunkInit(AbstractTrunkInit[Features]):
-    """The initial pair (`s_inputs`, relative positions and bonds), the language model's
-    pair (from ESMC, which it holds), and the column-masked MSA. The single is `s_inputs`.
-    With `lm_dropout` (the experimental type), the language model's pair is added to the
-    initial pair here, through that dropout; the release type's trunk injects it every
-    loop."""
+    """Build the initial pair, the language model's pair and the column-masked MSA. With
+    `lm_dropout`, as in the experimental type, the language model's pair is added here
+    instead of on every loop."""
 
     singles_to_pair: SinglesToPair  # s_inputs -> pair
     relative_positions: Linear
     bonds: Linear
     language_model: LanguageModelPair
-    # None only as stored: `jfold.pretrained` attaches the shared ESMC on loading
-    # (`jfold.pretrained.recipes.esmfold2`).
+    # `jfold.pretrained` attaches the shared ESMC when loading.
     esmc: ESMC | None = None
     lm_dropout: Dropout | Identity | None = None
-    # The share of MSA columns masked outside the query, once per forward pass.
+    # The fraction of MSA columns masked outside the query, drawn once per forward pass.
     msa_column_mask_rate: float = eqx.field(static=True, default=0.0)
 
     def __call__(
@@ -724,21 +686,20 @@ class TrunkInit(AbstractTrunkInit[Features]):
 
 
 class ParcaeTrunk(AbstractTrunk[Features]):
-    """The release type's pair trunk: a Parcae recurrence from a random state, injecting
-    the initial pair, the language model's pair and the MSA every loop, then the pair
-    stack; `finish` reads the state out through the coda."""
+    """The release type's pair trunk, a Parcae recurrence from a random state that `finish`
+    reads out through the coda."""
 
     lm_encoder: PairformerStack | None
     msa: MSAModule | None
     parcae: Parcae
     trunk: PairformerStack
     coda: PairformerStack
-    # Dropout on the language model's pair, drawn afresh every loop. On by default
-    # (`inference=False`): upstream applies it at inference too.
+    # On by default because upstream applies this dropout at inference too.
     lm_dropout: Dropout | Identity = eqx.field(default_factory=Identity)
 
     def init_state(self, inputs: TrunkInputs, *, key: PRNGKeyArray | None = None) -> TrunkState:
-        """A random pair: truncated normal, std `sqrt(2 / (5 Cz))`, cut at 3 std."""
+        """Draw a random pair from a normal with std `sqrt(2 / (5 Cz))`, truncated at 3 std.
+        """
         if key is None:
             raise ValueError("ESMFold2's trunk starts from a random state: pass a key")
         std = math.sqrt(2.0 / (5.0 * inputs.z_init.shape[-1]))
@@ -777,8 +738,8 @@ class ParcaeTrunk(AbstractTrunk[Features]):
 
 
 class TrackedMSA(eqx.Module):
-    """The experimental model's MSA update: the MSA module's output pair (its input plus
-    updates), zero when the MSA has no real rows past the query."""
+    """The experimental model's MSA update, zero when the MSA has no rows after the query.
+    """
 
     module: MSAModule
 
@@ -797,8 +758,7 @@ class TrackedMSA(eqx.Module):
 
 
 class RecyclingPairTrunk(AbstractTrunk[Features]):
-    """The experimental type's pair trunk: from zeros, each loop recycles the previous pair
-    onto the initial one (AF3-style), adds the MSA update, then runs the pair stack."""
+    """The experimental type's pair trunk, which recycles the previous pair as in AF3."""
 
     recycle: Recycle
     msa: TrackedMSA | None
@@ -826,17 +786,9 @@ class RecyclingPairTrunk(AbstractTrunk[Features]):
 
 
 def features(f: dict, *, r_max: int = 32, s_max: int = 2) -> Features:
-    """`Features` from the upstream model's forward inputs (`EsmFold2Model.forward`'s
-    keyword arguments, unbatched). `res_type` (`[T]`) and `msa` (`[S, T]`) may be
-    probability vectors over the 33 classes (`[T, 33]`, `[S, T, 33]`), e.g. a soft
-    sequence. `lm_hidden_states` (`[T, layers, D]`, zero off-protein) are precomputed ESMC
-    states per token. Without them the features carry ESMC's input, built from `res_type`
-    (so a soft sequence reaches the language model), for the trunk init to run ESMC on
-    (both in `extras`, a `LanguageModelInput`). The MSA profile is computed from the MSA,
-    as upstream (the input embedder zeroes it where its checkpoint does:
-    `InputEmbedder.msa_profile`). The arrays may be traced under `jit`, except that
-    without `lm_hidden_states` ESMC's layout (which token goes in which row) needs the
-    chain, residue and molecule ids concrete."""
+    """Build `Features` from the keyword arguments of `EsmFold2Model.forward`, where
+    `res_type` and `msa` may be soft. Without `lm_hidden_states`, the chain, residue and
+    molecule ids must be concrete because they set the layout of ESMC's input."""
     layout = None if "lm_hidden_states" in f else _static_lm_layout(f)
     a = arrays(f)
     token_mask = a["token_attention_mask"].astype(bool)
@@ -909,7 +861,6 @@ def features(f: dict, *, r_max: int = 32, s_max: int = 2) -> Features:
 
 
 def _static_lm_layout(f: dict) -> "LMLayout":
-    """ESMC's layout from `f`'s chain, residue and molecule ids, which must be concrete."""
     keys = ("asym_id", "residue_index", "mol_type", "token_attention_mask")
     missing = [k for k in keys if k not in f]
     if missing:
@@ -925,8 +876,7 @@ def _static_lm_layout(f: dict) -> "LMLayout":
     return lm_layout(ids["asym_id"], ids["residue_index"], protein)
 
 
-# ESMC's column for each of ESMFold2's 33 residue classes: the 20 amino acids, `X` (24)
-# for the unknown residue (class 22), and `<unk>` (3) for the classes that are not protein.
+# ESMC's column for each of ESMFold2's 33 residue classes, with `<unk>` for non-protein.
 _ESMC_COLUMN = np.array(
     [3, 3, 5, 10, 17, 13, 23, 16, 9, 6, 21, 12, 4, 15, 20, 18, 14, 8, 11, 22, 19, 7, 24] + [3] * 10
 )
@@ -934,14 +884,13 @@ _BOS, _EOS = 0, 2
 
 
 def esmc_residues(res_type: Float[Array, "T 33"], vocab: int = 64) -> Float[Array, "T V"]:
-    """Residue probability vectors moved to ESMC's amino-acid columns."""
+    """Map residue probability vectors to ESMC's amino-acid columns."""
     return res_type @ jax.nn.one_hot(_ESMC_COLUMN, vocab)
 
 
 class LMLayout(eqx.Module):
-    """Where a system's protein residues sit in ESMC's input: one row per residue (a
-    residue spanning several tokens keeps its first), each chain wrapped in BOS and EOS,
-    chains in `asym_id` order."""
+    """Where a system's protein residues sit in ESMC's input, with each chain wrapped in BOS
+    and EOS."""
 
     source: Int[Array, " L"]  # the system token in each row, -1 for BOS/EOS
     special: Int[Array, " L"]  # the BOS/EOS token id in each special row
@@ -950,7 +899,7 @@ class LMLayout(eqx.Module):
 
 
 def lm_layout(asym_id: np.ndarray, residue_index: np.ndarray, protein: np.ndarray) -> LMLayout:
-    """`LMLayout` from a system's chain and residue ids (numpy; the layout is static)."""
+    """Build an `LMLayout` from numpy chain and residue ids."""
     index = np.flatnonzero(protein)
     keys = list(zip(asym_id[index].tolist(), residue_index[index].tolist(), strict=True))
     first = {}
@@ -979,8 +928,7 @@ def lm_layout(asym_id: np.ndarray, residue_index: np.ndarray, protein: np.ndarra
 
 
 def lm_input(layout: LMLayout, residues: Float[Array, "T V"]) -> Float[Array, "L V"]:
-    """ESMC's input matrix: each system token's residue vector (`esmc_residues`, or a
-    one-hot of the upstream's `input_ids`) in its row, exact one-hot BOS and EOS rows."""
+    """Build ESMC's input matrix from residue vectors and one-hot BOS and EOS rows."""
     special = jax.nn.one_hot(layout.special, residues.shape[-1])
     return jnp.where(layout.source[:, None] >= 0, residues[layout.source], special)
 
@@ -988,7 +936,6 @@ def lm_input(layout: LMLayout, residues: Float[Array, "T V"]) -> Float[Array, "L
 def token_hidden_states(
     hidden: Float[Array, "layers L D"], positions: Int[Array, " T"]
 ) -> Float[Array, "T layers D"]:
-    """ESMC's states for each system token (`LMLayout.positions`), zero off-protein, in
-    the upstream's `lm_hidden_states` layout."""
+    """Gather ESMC's states for each system token, zero off-protein."""
     states = jnp.where(positions[None, :, None] >= 0, hidden[:, positions], 0.0)
     return jnp.swapaxes(states, 0, 1)

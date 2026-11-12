@@ -1,10 +1,5 @@
-"""AtlasFold's features, as its runners produce them for proteins (see
-`docs/upstream-featurization/atlasfold.md`): the dict `jfold.models.atlasfold.features`
-takes, for AtlasFold-M (`MultimerFoldingRunner`, the default) or AtlasFold
-(`FoldingRunner`, one chain). One sequence per chain: no MSA, no templates.
-
-Atoms are atom14 slots: residue `t`'s atoms are slots `14 t ...` of the model's positions,
-the first `n` of them for a residue type with `n` atoms (`atom14_mask`)."""
+"""Featurize proteins for AtlasFold and AtlasFold-M as their runners do, with one sequence
+per chain and no MSA or templates. See `docs/upstream-featurization/atlasfold.md`."""
 
 import numpy as np
 
@@ -14,11 +9,10 @@ from jfold.featurize.sites import atom_sites as _atom_sites
 from jfold.featurize.system import THREE_LETTER, System
 
 RESTYPES = "ARNDCQEGHILKMFPSTWYVX"
-# AtlasLM's vocabulary: <cls> 0, <pad> 1, <eos> 2, the residue letters from 4.
+# AtlasLM's token ids.
 BOS, PAD, EOS = 0, 1, 2
 LM_TOKEN = {c: 4 + i for i, c in enumerate("LAGVSERTIDPKQNFYMHWCX")}
-# The runners' residue buckets (`atlasfold.common.featurize.DEFAULT_BUCKETS`), then
-# multiples of 128.
+# The runners pad to `atlasfold.common.featurize.DEFAULT_BUCKETS`, then to multiples of 128.
 BUCKETS = (32, 64, 128, 192, 256, 384, 512, 640, 768, 896, 1024)
 BUCKETS += tuple(range(1152, 2049, 128))
 CB, CA = 4, 1  # atom14 slots
@@ -30,12 +24,11 @@ def residues() -> ResidueTable:
 
 
 def bucket(length: int) -> int:
-    """The runners' padded residue count for `length` residues."""
+    """Return the runners' padded residue count for `length` residues."""
     return next((b for b in BUCKETS if length <= b), -(-length // 128) * 128)
 
 
 def _chain(sequence: str, entity: int, asym: int, sym: int) -> dict[str, np.ndarray]:
-    """`atlasfold.common.featurize.featurize` of one chain."""
     table = residues()
     length = len(sequence)
     aatype = np.array([RESTYPES.index(c) for c in sequence], np.int64)
@@ -65,8 +58,6 @@ def _chain(sequence: str, entity: int, asym: int, sym: int) -> dict[str, np.ndar
 
 
 def _pad(feat: dict[str, np.ndarray], residues: int, lm_tokens: int) -> dict[str, np.ndarray]:
-    """Residue features to `residues` rows and AtlasLM's to `lm_tokens`, with zeros (and
-    <pad> for the tokens)."""
     out = {}
     for k, v in feat.items():
         length = lm_tokens if k.startswith("lm.") else residues
@@ -76,10 +67,8 @@ def _pad(feat: dict[str, np.ndarray], residues: int, lm_tokens: int) -> dict[str
 
 
 def features(system: System, *, multimer: bool = True) -> dict[str, np.ndarray]:
-    """The feature dict for `system`, padded as the runner pads it: residues to the
-    length bucket, AtlasLM's tokens to 32 more (AtlasFold-M) or 2 more (AtlasFold).
-    AtlasFold-M numbers entities by first appearance of each sequence and copies within
-    them (`ProteinMultimer`), all from 1."""
+    """Return AtlasFold's feature dict for `system`, padded to the runner's length bucket.
+    """
     system = system.without_templates("AtlasFold")
     chains = system.chains
     if any(c.msa is not None for c in chains):
@@ -103,6 +92,6 @@ def features(system: System, *, multimer: bool = True) -> dict[str, np.ndarray]:
 
 
 def atom_sites(system: System) -> AtomSites:
-    """The real atoms of `system`'s features, residue by residue in atom14 order: their
-    positions are the model's at `atom14_mask` (`coords[f["atom14_mask"].reshape(-1)]`)."""
+    """Describe the real atoms of `system`'s features in atom14 order, at
+    `coords[f["atom14_mask"].reshape(-1)]`."""
     return _atom_sites(system.chains, residues())

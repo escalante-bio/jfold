@@ -1,5 +1,4 @@
-"""`jfold.featurize.views.atlasfold` against AtlasFold's runners on the shared fixture
-systems without MSAs and a homomer (`tests/featurize/data/atlasfold[_m]_<system>.npz`)."""
+"""Test `jfold.featurize.views.atlasfold` against AtlasFold's runners."""
 
 import numpy as np
 import pytest
@@ -26,7 +25,7 @@ def test_atlasfold_m(name):
     with np.load(path) as upstream:
         assert set(ours) == set(upstream.files)
     assert_matches(ours, path)
-    atlasfold.features(ours)  # the model reads it
+    atlasfold.features(ours)  # the model accepts it
 
 
 def test_atlasfold():
@@ -43,7 +42,7 @@ def test_refuses_msas():
 
 
 def test_atom_sites():
-    """One site per atom14 slot in use, in slot order."""
+    """Check that there is one site per atom14 slot in use, in slot order."""
     s = _system("homomer")
     f = view.features(s)
     sites = view.atom_sites(s)

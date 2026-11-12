@@ -1,16 +1,12 @@
-"""Pairwise sequence alignment as upstream pipelines use it to place templates.
-
-`local_alignments` is Biopython's `PairwiseAligner(scoring="blastp")` in local mode with
-gaps forbidden (open and extend scores of -1000), as Boltz-2 aligns a chain to its
-template: every optimal alignment, each an ungapped segment, without Biopython."""
+"""Pairwise sequence alignment for placing templates, reproducing Biopython's ungapped local
+`PairwiseAligner(scoring="blastp")` as Boltz-2 uses it."""
 
 from typing import NamedTuple
 
 import numpy as np
 
 _LETTERS = "ARNDCQEGHILKMFPSTWYVX"
-# Biopython's "blastp" substitution matrix: BLOSUM62 over the amino acids, X scoring -1
-# against everything.
+# Biopython's "blastp" substitution matrix is BLOSUM62 with X scoring -1 against everything.
 _BLOSUM62 = {
     "A": (4, -1, -2, -2, 0, -1, -1, 0, -2, -1, -1, -1, -1, -2, -1, 1, 0, -3, -2, 0, -1),
     "R": (-1, 5, 0, -2, -3, 1, 0, -2, 0, -3, -2, 2, -1, -3, -2, -1, -1, -3, -2, -3, -1),
@@ -38,8 +34,7 @@ BLOSUM62 = np.array([_BLOSUM62[a] for a in _LETTERS], np.int64)
 
 
 class Alignment(NamedTuple):
-    """An ungapped segment: `query[query_start:query_end]` against
-    `template[template_start:template_end]` (both the same length)."""
+    """An ungapped segment aligning `query[query_start:query_end]` to the template."""
 
     query_start: int
     query_end: int
@@ -55,11 +50,8 @@ def _indices(sequence: str) -> np.ndarray:
 
 
 def local_alignments(query: str, template: str) -> list[Alignment]:
-    """Every optimal ungapped local alignment of `query` and `template` under BLOSUM62, as
-    Biopython's aligner enumerates them: a segment starts after the last place its
-    diagonal's running score (reset at zero) was zero, and ends where that score first
-    reaches the best; ties ordered by where they end (query, then template). None when no
-    pair of residues scores above zero."""
+    """Return every optimal ungapped local alignment under BLOSUM62, in the order
+    Biopython's aligner returns them."""
     scores = BLOSUM62[_indices(query)][:, _indices(template)]
     n, m = scores.shape
     runs = []  # (score, query start, query end, template start) per run of each diagonal

@@ -1,7 +1,4 @@
-"""AtlasFold and AtlasFold-M against the upstream implementation, small models with random
-weights: AtlasLM's feature embedder, trunk passes (templates included), a denoising step,
-the confidence heads and the distogram, on a two-chain complex as the upstream featurizes
-it, unpadded and padded as its runner pads."""
+"""Test small AtlasFold and AtlasFold-M models with random weights against the upstream."""
 
 import dataclasses
 
@@ -17,8 +14,8 @@ from jfold.slots import TrunkState
 
 atlasfold_model = pytest.importorskip("atlasfold.model")
 
-# Chains of 8 and 4 residues (12, a multiple of the 4-residue atom windows), unpadded; and
-# three chains (a repeated one), padded as the runner pads.
+# Two chains of 8 and 4 residues, unpadded (12 is a multiple of the 4-residue atom windows),
+# and three chains, one repeated, padded as the runner pads.
 UNPADDED = (("MKTAYIGK", "GSXM"), (1, 2), (1, 2), (1, 1), None)
 PADDED = (("MKTAYIGK", "GSHMW", "MKTAYIGK"), (1, 2, 1), (1, 2, 3), (1, 1, 2), 28)
 NUM_TEMPLATES = 2
@@ -62,8 +59,7 @@ def _upstream(multimer: bool, seed: int):
 
 
 def _batch(system, *, templates: bool, seed: int = 0) -> dict[str, np.ndarray]:
-    """The complex as the upstream featurizes it (`featurize_complex`, padded as the
-    multimer runner pads); random templates."""
+    """Featurize the complex with upstream's `featurize_complex`, adding random templates."""
     from atlasfold.common import featurize
 
     sequences, entity, asym, sym, length = system
@@ -116,8 +112,7 @@ def _masks(feat, num: int, seed: int) -> np.ndarray:
 @pytest.mark.parametrize("multimer", [True, False])
 @pytest.mark.parametrize("system", [UNPADDED, PADDED], ids=["unpadded", "padded"])
 def test_trunk(multimer, system):
-    """The language model's single and pair, and two trunk passes (templates included for
-    AtlasFold-M), each with its own MLM mask."""
+    """Check the language model's single and pair, and two trunk passes with their own MLM masks."""
     from jfold.models import atlasfold
 
     m = _upstream(multimer, seed=1)
@@ -161,7 +156,7 @@ def test_trunk(multimer, system):
 @pytest.mark.parametrize("multimer", [True, False])
 @pytest.mark.parametrize("system", [UNPADDED, PADDED], ids=["unpadded", "padded"])
 def test_heads(multimer, system):
-    """A denoising step, the confidence logits and the distogram from a random trunk."""
+    """Check a denoising step, the confidence logits and the distogram from a random trunk."""
     from jfold.models import atlasfold
 
     m = _upstream(multimer, seed=3)
@@ -216,8 +211,7 @@ def test_heads(multimer, system):
 
 
 def test_padding_is_ignored():
-    """Garbage in the padding (residues, atoms, language-model rows) leaves the real
-    outputs of a trunk pass, a denoising step and the confidence heads unchanged."""
+    """Check that garbage in padded residues, atoms and language-model rows changes no output."""
     from jfold.models import atlasfold
 
     m = _upstream(True, seed=5)
@@ -282,7 +276,7 @@ def test_padding_is_ignored():
 
 
 def test_atlaslm():
-    """AtlasLM's embeddings (packed chains, rotary positions restarting per chain)."""
+    """Check AtlasLM's embeddings with packed chains and rotary positions restarting per chain."""
     from atlaslm.model import AtlasLM
 
     from jfold.convert import atlasfold as convert
@@ -307,7 +301,6 @@ def test_atlaslm():
 
 
 def test_sampling_and_round_trip():
-    """Upstream's noise schedule; the converted model saves and loads."""
     from atlasfold.model.network.diffusion_head import SamplingConfig
 
     model = _convert(_upstream(True, seed=9))
@@ -316,8 +309,7 @@ def test_sampling_and_round_trip():
 
 
 def test_structure_model():
-    """The converted model runs as a `StructureModel` (trunk passes with their own MLM
-    masks, a sample, confidence); stored without AtlasLM, it gets it back on loading."""
+    """Check that the converted model runs as a `StructureModel`, also after a save and load."""
     from jfold.models import atlasfold
     from jfold.pretrained.recipes.atlasfold import _attach_lm, _detach_lm
 
@@ -337,7 +329,6 @@ def test_structure_model():
 
 
 def test_soft_sequence_reaches_the_language_model():
-    """A soft sequence fills AtlasLM's residue rows, and its gradient reaches the trunk."""
     from jfold.models import atlasfold
 
     model = _convert(_upstream(True, seed=10))

@@ -1,6 +1,4 @@
-"""End-to-end parity with the released OpenDDE checkpoint (`opendde_v1`): the residue trunk,
-the structural-token branch, one denoising step, confidence and distogram on a small real
-complex. Downloads weights; run with `pytest -m checkpoint`."""
+"""Compare jfold with the released OpenDDE checkpoint (`opendde_v1`) on a small real complex."""
 
 import copy
 import json
@@ -24,8 +22,7 @@ KEY = jax.random.key(0)
 
 
 def _biotite_compat():
-    """OpenDDE's featurizer reaches into `BondList` internals that biotite 1.7 (a compiled
-    extension) does not expose; restore the few it uses."""
+    """Restore the `BondList` internals that OpenDDE's featurizer uses."""
     import biotite.structure as struc
 
     bonds = struc.BondList
@@ -59,9 +56,7 @@ def _configs():
 
 
 def _reference_model(configs):
-    """The released model as `jfold.pretrained` builds it (as OpenDDE's inference runner
-    does), from that runner's checkpoint path. Downloads the checkpoint and the featurizer's
-    CCD data if missing."""
+    """Load the released model from the runner's checkpoint path, as OpenDDE's runner does."""
     from opendde.utils.download import download_inference_cache, resolve_checkpoint_path
 
     from jfold import pretrained
@@ -93,7 +88,7 @@ def _featurize(configs) -> dict:
 
 
 def _pad_structural(features, num: int, seed: int = 0):
-    """`features` with `num` masked garbage structural tokens appended."""
+    """Append `num` masked garbage structural tokens to `features`."""
     import equinox as eqx
 
     rng = np.random.default_rng(seed)
@@ -188,7 +183,7 @@ def test_opendde():
         "z": rel_err(state.z, z),
     }
 
-    # Later stages from the reference trunk, so errors do not compound.
+    # Run the later stages from the reference trunk so errors do not compound.
     ref_state = TrunkState(s=jnp.array(s.numpy()), z=jnp.array(z.numpy()))
     ref_inputs = jax.tree.map(lambda x: x, inputs)
     ours_s_inputs, ours_structural, _ = eqx.filter_jit(type(model.diffusion).structural_trunk)(
@@ -202,7 +197,7 @@ def test_opendde():
     context = eqx.filter_jit(lambda m, *a: m.diffusion.prepare(*a))(model, features, ref_inputs, ref_state)
     ours = model.diffusion(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL))
     errors["denoised"] = rel_err(ours, denoised)
-    # Masked structural tokens change nothing.
+    # Masked structural tokens must not change the outputs.
     padded = _pad_structural(features, 9)
     context = eqx.filter_jit(lambda m, *a: m.diffusion.prepare(*a))(model, padded, ref_inputs, ref_state)
     padded_out = model.diffusion(context, jnp.array(x_noisy), jnp.array(NOISE_LEVEL))

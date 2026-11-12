@@ -1,5 +1,4 @@
-"""`jfold.featurize.views.promera` against ProMERA's upstream featurization on the shared
-fixture systems (`tests/featurize/data/promera_<system>.npz`)."""
+"""Test `jfold.featurize.views.promera` against ProMERA's featurization."""
 
 import jax
 import numpy as np
@@ -30,7 +29,7 @@ def fixture(name):
 def test_promera(name, tmp_path):
     ours = promera.features(system(name))
     assert set(ours) == KEYS
-    # Unposed, ref_pos is upstream's canonical conformer; everything else is deterministic.
+    # Without a pose, ref_pos is upstream's canonical conformer and every other key is fixed.
     upstream = fixture(name)
     upstream["ref_pos"] = upstream["aux_ref_pos_canonical"]
     np.savez(tmp_path / "upstream.npz", **upstream)
@@ -39,8 +38,7 @@ def test_promera(name, tmp_path):
 
 @pytest.mark.parametrize("name", sorted(SYSTEMS))
 def test_promera_pose(name):
-    """Upstream's drawn translations and rotations, applied to our canonical conformers,
-    give upstream's ref_pos."""
+    """Check that upstream's drawn poses on our canonical conformers give upstream's ref_pos."""
     upstream = fixture(name)
     canonical, uid = promera.reference_conformers(system(name))
     posed = promera.pose(
@@ -75,7 +73,7 @@ def test_promera_random_pose():
 
 
 def test_promera_rotation_convention():
-    """Quaternions map to matrices as scipy's `Rotation.from_quat` (scalar last)."""
+    """Check that quaternions map to matrices as scipy's `Rotation.from_quat` does (scalar last)."""
     from scipy.spatial.transform import Rotation
 
     key = jax.random.key(3)
@@ -85,8 +83,7 @@ def test_promera_rotation_convention():
 
 
 def test_promera_unk_and_layout():
-    """UNK has the CCD UNK's 6 atoms with CA representative; a chain that runs out of MSA
-    rows holds <pad> (0) with the mask on."""
+    """Check UNK's atoms and the MSA of a chain with fewer rows than the others."""
     msa = ">query\nMKTAYIAKQRQISFVKSHFSRQ\n>a\nMKTAYIAKQRQISFVKSHFSRE\n>b\nMKTAYIAKQRQISFVKSHFSRA\n"
     sys = System(
         (
@@ -106,8 +103,7 @@ def test_promera_unk_and_layout():
 
 
 def test_promera_taxonomy_reorders():
-    """Hits sharing a UniRef100 taxonomy move ahead of the rest, flagged paired, even in a
-    single chain."""
+    """Check that hits sharing a UniRef100 taxonomy move first and are flagged as paired."""
     rows = ["MKTA", "MKTE", "MKTD", "MKTC"]
     headers = ["query", "UniRef100_a", "UniRef100_b", "UniRef100_c"]
     text = "".join(f">{h}\n{r}\n" for h, r in zip(headers, rows, strict=True))

@@ -1,4 +1,4 @@
-"""Template embedder parity against each upstream PyTorch implementation."""
+"""Test the template embedder against each upstream PyTorch implementation."""
 
 import dataclasses
 
@@ -22,8 +22,7 @@ t = torch.from_numpy
 
 @dataclasses.dataclass
 class Templates:
-    """Templates in every upstream's vocabulary: geometry (Boltz-2 derives its pair features
-    from it) and precomputed pair features (the others')."""
+    """Templates in every upstream's vocabulary."""
 
     aatype: np.ndarray  # [N, T]
     distogram: np.ndarray  # [N, T, T, 39] one-hot
@@ -66,7 +65,7 @@ def make_templates(num_templates, num_tokens, seed) -> Templates:
 
 
 def padded(x: Templates, templates: int, tokens: int) -> Templates:
-    """`x` with `templates` garbage templates and `tokens` garbage tokens appended."""
+    """Append `templates` garbage templates and `tokens` garbage tokens to `x`."""
     n, k = x.aatype.shape
     g = make_templates(n + templates, k + tokens, seed=9)
     for f in dataclasses.fields(x):
@@ -241,8 +240,7 @@ def _forward(module, z, features, template_mask, mask):
 @pytest.mark.parametrize("padding", [(0, 0), (1, 2)], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("case", CASES)
 def test_template_embedder_matches_reference(case, padding):
-    """The template embedding matches the upstream on the real tokens, with a masked garbage
-    template and garbage tokens appended; outputs and gradients stay finite."""
+    """Check that the template embedding matches the upstream on the real tokens."""
     module, run_reference, convert, features = CASES[case]()
     randomize(module, seed=0)
     ours = convert(module)
@@ -265,9 +263,7 @@ def test_template_embedder_matches_reference(case, padding):
 
 @pytest.mark.checkpoint
 def test_constant_template_mask_under_jit():
-    """A released template embedder jitted with an all-real template mask made inside the
-    jitted function (as `jfold.models.protenix.features` makes it) gives its eager output.
-    XLA's GPU GEMM fusion once miscompiled this case."""
+    """Check a template mask made under jit, which XLA's GPU GEMM fusion once miscompiled."""
     from test_featurize import system
 
     from jfold import pretrained

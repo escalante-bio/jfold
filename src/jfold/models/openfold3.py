@@ -17,8 +17,7 @@ def atom_features(
     ref_element: Float[Array, "N E"],
     ref_atom_name_chars: Float[Array, "N 4 64"],
 ) -> Float[Array, "N F"]:
-    """The atom feature vector, in the column order `convert.openfold3.atom_encoder` lays
-    out: position, arcsinh of the charge, mask, element and name characters."""
+    """Build the atom feature vector in `convert.openfold3.atom_encoder`'s column order."""
     return jnp.concatenate(
         [
             ref_pos,
@@ -34,9 +33,7 @@ def atom_features(
 def template_features(
     distogram, pseudo_beta_mask, restype, unit_vector, backbone_frame_mask, asym_id
 ):
-    """Each template's pair feature vector `[N, T, T, F]`: distogram, pseudo-beta pair mask,
-    residue type of the row then of the column token, unit vector and backbone-frame pair
-    mask; the masks are zero between chains."""
+    """Build each template's pair features, with masks zeroed between chains."""
     same_chain = (asym_id[:, None] == asym_id[None, :])[..., None]
     pair = lambda m: (m[..., :, None] * m[..., None, :])[..., None] * same_chain
     n = restype.shape[-2]
@@ -54,9 +51,8 @@ def template_features(
     )
 
 
-# OpenFold3's residue classes (`STANDARD_RESIDUES_WITH_GAP_3`) and, per class, the index
-# within the residue of the atoms that can represent a token (-1: the residue has none), from
-# `token_atom_constants.atom_name_to_index_by_restype`.
+# OpenFold3's residue classes, and the index of each representative atom within each
+# residue class (-1 if absent), from `token_atom_constants`.
 RESIDUES = (
     "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS",
     "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL", "UNK",
@@ -71,11 +67,8 @@ _ATOM_INDEX = {
 
 
 def representative_atoms(restype, is_protein, is_dna, is_rna, is_atomized, start_atom_index):
-    """Each token's representative atom (`get_token_representative_atoms`): CB (CA for
-    glycine) for standard residues, C4 for purines, C2 for pyrimidines and the first atom
-    of atomized tokens. `restype` is OpenFold3's one-hot `[T, 32]` of the featurized
-    residues: the atoms are those of its residues, so for a soft sequence pass the fixed
-    layout's own `rep_atom` to `features` instead."""
+    """Return each token's representative atom as `get_token_representative_atoms` does,
+    assuming `restype` holds the featurized residues."""
     restype = restype.astype(jnp.float32)
 
     def offset(atom):
@@ -100,14 +93,9 @@ def representative_atoms(restype, is_protein, is_dna, is_rna, is_atomized, start
 
 
 def features(batch: dict, rep_atom=None) -> Features:
-    """`jfold.model.Features` from an OpenFold3 feature dict (its inference featurization;
-    unbatched torch tensors, numpy or JAX arrays). All templates count, empty ones included,
-    as in OpenFold3's template average.
-
-    `restype`, `profile` and `msa` may be probabilities over OpenFold3's 32 residue classes
-    (soft sequences), and every step is traceable, so the dict may be built inside `jit`.
-    `rep_atom` defaults to `representative_atoms` of `restype`: pass it when `restype` is a
-    soft sequence over a fixed atom layout."""
+    """Build `jfold.model.Features` from an OpenFold3 feature dict, counting empty templates
+    as OpenFold3's template average does. Pass `rep_atom` when `restype` is a soft sequence
+    over a fixed atom layout."""
     f = arrays(batch)
     flt = lambda k: f[k].astype(jnp.float32)
     num_atoms = f["atom_to_token_index"].shape[0]

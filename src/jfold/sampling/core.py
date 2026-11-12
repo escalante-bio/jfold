@@ -1,10 +1,6 @@
-"""One diffusion sampler (AF3 Algorithm 18) for every AF3-class structure module.
+"""A diffusion sampler (AF3 Algorithm 18) shared by all AF3-class structure modules.
 
-A model's structure module enters as a `Denoise` function, `SamplerSettings` holds what
-the models' samplers differ in, and `Noise` holds all randomness.
-
-Written for a single sample (`x: [A, 3]`, Å); `jax.vmap` over keys (or `Noise`) for
-several.
+It draws one sample of shape `[A, 3]` in Å. Use `jax.vmap` over keys to draw several.
 """
 
 from collections.abc import Callable
@@ -21,9 +17,8 @@ Denoise = Callable[[Float[Array, "A 3"], Float[Array, ""]], Float[Array, "A 3"]]
 included. Build it as an `eqx.Partial` binding the weights and conditioning, so they stay
 pytree leaves."""
 
-# Frame policies. `SamplerSettings.center` maps `(x, mask) -> x`; `SamplerSettings.align` maps
-# `(x, target, mask) -> x`. They are static fields, so they must be module-level
-# functions: a fresh `lambda` / `partial` per `SamplerSettings` would miss the jit cache.
+# `SamplerSettings.center` and `SamplerSettings.align` are static fields, so they must be
+# module-level functions. A new lambda or partial for each instance would miss the jit cache.
 
 
 def no_centering(x: Float[Array, "A 3"], mask: Float[Array, " A"]) -> Float[Array, "A 3"]:
@@ -31,7 +26,7 @@ def no_centering(x: Float[Array, "A 3"], mask: Float[Array, " A"]) -> Float[Arra
 
 
 def mean_centering(x: Float[Array, "A 3"], mask: Float[Array, " A"]) -> Float[Array, "A 3"]:
-    """Subtract the atom mean, padding included (so padding moves the sample)."""
+    """Subtract the mean over all atoms, including padding."""
     return x - x.mean(0)
 
 
@@ -47,24 +42,19 @@ def no_alignment(
     return x
 
 
-# Update rules for `SamplerSettings.update`: step `x` from noise level `t_hat` to
-# `sigma_next`, given the denoised estimate `x0`.
-
-
 def euler_update(x, x0, t_hat, sigma_next, step_scale):
-    """Euler step scaled by `step_scale` (AF3 Algorithm 18); unstable with few steps."""
+    """Take AF3's Euler step from `t_hat` to `sigma_next`, which is unstable with few steps."""
     return x + step_scale * (sigma_next - t_hat) * (x - x0) / t_hat
 
 
 def exponential_update(x, x0, t_hat, sigma_next, step_scale):
-    """`r^S x + (1 - r^S) x0` with `r = sigma_next / t_hat`: stable with few steps
+    """Return `r^S x + (1 - r^S) x0` with `r = sigma_next / t_hat`, which is stable with few steps
     (Blitz, arXiv:2610.23703)."""
     keep = (sigma_next / t_hat) ** step_scale
     return keep * x + (1 - keep) * x0
 
 
 def _kabsch(x, target, mask):
-    """Weighted Kabsch fit of `x` onto `target`: (centred x, rotation, target centroid)."""
     w = mask[:, None]
     total = w.sum()
     x_c = x - (x * w).sum(0) / total
@@ -89,36 +79,22 @@ def rigid_align(
 def rigid_align_stop_gradient(
     x: Float[Array, "A 3"], target: Float[Array, "A 3"], mask: Float[Array, " A"]
 ) -> Float[Array, "A 3"]:
-    """Rigidly move `x` onto `target`, without gradients through the fitted
-    rotation or target centroid (gradients still flow through `x`'s centring)."""
+    """Rigidly move `x` onto `target`, with no gradients through the fitted rotation or target
+    centroid."""
     x_c, rotation, target_mean = _kabsch(x, target, mask)
     return _apply(x_c, *jax.lax.stop_gradient((rotation, target_mean)))
 
 
 class SamplerSettings(eqx.Module):
-    """The stochastic-churn sampler's settings (AF3 Algorithm 18): schedule, churn, frame
-    policy and update.
+    """Settings for the stochastic sampler of AF3 Algorithm 18.
 
-    `sigmas` is the noise schedule, `num_steps + 1` levels from high to low (see
-    `jfold.sampling.schedules`). Each step from `sigma` to `sigma_next` first
-    raises the noise level to `t_hat = sigma * (1 + gamma)`, with
-    `gamma = gamma_0` while `sigma_next > gamma_min` (else 0), adding
-    `noise_scale * sqrt(t_hat² - sigma²)` Gaussian noise; then steps to
-    `sigma_next` with `update`: `euler_update` or `exponential_update`.
-    `gamma_0=0, noise_scale=1, step_scale=1` with `euler_update` is the plain
-    probability-flow ODE.
-
-    Frame policy, applied every step:
-      - `center`: `no_centering`, `mean_centering` or `masked_centering`.
-      - `augment`: apply the step's random rotation and translation.
-      - `augment_after_noise`: centre/augment after the churn noise, not before.
-      - `align`: before the update, move the noisy sample onto the denoised
-        one with `rigid_align` or `rigid_align_stop_gradient`, or `no_alignment`.
-
-    A converted model's `sampling.settings(...)` (`jfold.sampling.UpstreamSampler`)
-    returns the `SamplerSettings` reproducing its upstream loop; adjust it with
-    `dataclasses.replace`. For few-step sampling pair `exponential_update` with
-    `schedules.Geometric()`.
+    `sigmas` holds `num_steps + 1` noise levels from high to low. Each step raises the noise
+    from `sigma` to `t_hat = sigma * (1 + gamma)` by adding Gaussian noise scaled by
+    `noise_scale`, with `gamma = gamma_0` while `sigma_next > gamma_min` and 0 after, then moves
+    to `sigma_next` with `update`. `center`, `augment`, `augment_after_noise` and `align` set how
+    the sample is centred, randomly rotated and aligned to the denoised estimate at each step.
+    A model's `sampling.settings(...)` gives its upstream settings, which `dataclasses.replace`
+    can change. For few steps, use `exponential_update` with `schedules.Geometric()`.
     """
 
     sigmas: Float[Array | np.ndarray, " T"]
@@ -138,11 +114,7 @@ class SamplerSettings(eqx.Module):
 
 
 class Noise(eqx.Module):
-    """Every random draw one sampling run consumes.
-
-    `init` and `churn` are standard normal (scaled by the sampler), `rotations`
-    are Haar-random and applied as `x @ R`, `translations` are standard normal.
-    """
+    """All random draws for one sampling run, with `rotations` applied as `x @ R`."""
 
     init: Float[Array, "A 3"]
     churn: Float[Array, "S A 3"]
@@ -161,9 +133,9 @@ class Noise(eqx.Module):
 
 
 def random_rotation(key: PRNGKeyArray) -> Float[Array, "3 3"]:
-    """Haar-random rotation from a Gaussian quaternion."""
+    """Return a uniformly random rotation from a Gaussian quaternion."""
     r, i, j, k = jax.random.normal(key, (4,))
-    s = 2.0 / (r * r + i * i + j * j + k * k)  # scale-invariant: no normalisation needed
+    s = 2.0 / (r * r + i * i + j * j + k * k)  # Dividing by |q|^2 normalises q.
     return jnp.stack(
         [
             jnp.stack([1 - s * (j * j + k * k), s * (i * j - k * r), s * (i * k + j * r)]),
@@ -173,17 +145,15 @@ def random_rotation(key: PRNGKeyArray) -> Float[Array, "3 3"]:
     )
 
 
-@eqx.filter_jit  # `denoise` (weights + conditioning) is an argument, never a baked-in constant
+@eqx.filter_jit
 def integrate(
     denoise: Denoise,
     atom_mask: Float[Array, " A"],
     settings: SamplerSettings,
     noise: Noise,
 ) -> Float[Array, "A 3"]:
-    """Run the sampler with `settings` on the draws in `noise` (deterministic).
-
-    `atom_mask` marks real (non-padding) atoms for centring and alignment.
-    """
+    """Run the sampler deterministically on the draws in `noise`, centring and aligning on the atoms
+    in `atom_mask`."""
     s = settings
     gammas = jnp.where(s.sigmas[1:] > s.gamma_min, s.gamma_0, 0.0)
 
@@ -217,6 +187,6 @@ def sample(
     *,
     key: PRNGKeyArray,
 ) -> Float[Array, "A 3"]:
-    """Draw fresh `Noise` from `key` and `integrate`."""
+    """Draw new `Noise` from `key` and run the sampler with it."""
     noise = Noise.draw(key, num_steps=settings.num_steps, num_atoms=atom_mask.shape[0])
     return integrate(denoise, atom_mask, settings, noise)

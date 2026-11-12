@@ -1,23 +1,9 @@
-"""Write the template fixtures: `tests/featurize/data/template_systems.json` and a PDB file
-per template.
+"""Write `template_systems.json` and one PDB file per template to `tests/featurize/data/`.
 
-Run from the jfold root:
+Each residue is a randomly rotated Boltz-2 reference conformer placed along a line,
+so the geometry is plausible but not real.
 
     uv run python tools/fixtures/make_templates.py
-
-Each template residue is its Boltz-2 reference conformer (conformer 0) moved along a line,
-so the geometry is plausible but not a real structure; featurization only reads it.
-Residues are numbered from 1 by their position in the template's sequence, so a template
-with unresolved residues leaves those numbers out. The systems exercise:
-
-- a full-length template, alone and on one copy of a homodimer;
-- truncated ends, missing backbone and CB atoms (CB of a glycine is CA);
-- an internal deletion with a mutation (Boltz-2 places every template residue with one
-  alignment offset; OpenFold3 drops a template that leaves a residue unaligned);
-- unresolved residues and an unknown residue;
-- templates on every chain, one of them on a 4-residue chain (Mol-1 ignores those);
-- templates longer than their chain (OpenFold3 realigns them; Protenix and Mol-1, which
-  place template residues one for one, refuse them).
 """
 
 import json
@@ -34,8 +20,8 @@ SHORT = "GSHMLEDPV"
 
 
 def pdb(sequence: str, present: list[int], drop: dict[int, list[str]], seed: int) -> str:
-    """PDB text for the residues `present` (1-based positions in `sequence`), without the
-    atoms `drop` lists; coordinates to 3 decimals, as PDB writes them."""
+    """Return PDB text for the 1-based positions `present` in `sequence`, without the atoms in
+    `drop`."""
     rng = np.random.default_rng(seed)
     table = residues()
     lines, serial = [], 1
@@ -59,15 +45,15 @@ def pdb(sequence: str, present: list[int], drop: dict[int, list[str]], seed: int
 
 
 def main() -> None:
-    gap = LONG[:8] + LONG[11:]  # residues 9-11 deleted
-    gap = gap[:14] + "W" + gap[15:]  # and a mutation
+    gap = LONG[:8] + LONG[11:]  # Delete residues 9-11.
+    gap = gap[:14] + "W" + gap[15:]  # Add a mutation.
     unknown = LONG[:4] + "X" + LONG[5:]
     tetra = SHORT[:4]
-    # file: (sequence, residues with coordinates, atoms left out, seed, sequence placed by
-    # residue number, so the residues without coordinates are unresolved)
+    # file: (sequence, residues with coordinates, atoms left out, seed, whether the system
+    # gives the template sequence so the residues without coordinates count as unresolved)
     templates = {
         "template_full.pdb": (LONG, range(1, 23), {}, 0, False),
-        # Residues 2-8 of SHORT; its H without CB, its M without N.
+        # Residues 2-8 of SHORT. The H has no CB and the M has no N.
         "template_truncated.pdb": (SHORT[1:8], range(1, 8), {2: ["CB"], 3: ["N"]}, 1, False),
         "template_gap.pdb": (gap, range(1, len(gap) + 1), {}, 2, False),
         "template_unresolved.pdb": (
@@ -77,7 +63,7 @@ def main() -> None:
             3,
             True,
         ),
-        # Glycine first; its H without CB, its M without N, its V without C.
+        # Starts with glycine. The H has no CB, the M has no N and the V has no C.
         "template_short.pdb": (SHORT, range(1, 10), {3: ["CB"], 4: ["N"], 9: ["C"]}, 10, False),
         "template_tetra.pdb": (tetra, range(1, 5), {}, 11, False),
     }
@@ -111,7 +97,7 @@ def main() -> None:
             chain("A", LONG, "template_full.pdb"),
             chain("B", tetra, "template_tetra.pdb"),
         ],
-        # Each template covers its chain: one longer than it, one as long, with gaps in atoms.
+        # One template is longer than its chain and the other is the same length.
         "dimer_template_covering": [
             chain("A", LONG[1:19], "template_full.pdb"),
             chain("B", SHORT[1:8], "template_truncated.pdb"),

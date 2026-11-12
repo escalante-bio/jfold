@@ -1,5 +1,4 @@
-"""Write `docs/models/README.md`: the skeleton diagram and a table of what fills each part
-for every model, read from the released copies' `model.json` (no weights are downloaded).
+"""Generate `docs/models/README.md` from the released models' `model.json` files.
 
     uv run python tools/model_table.py
 """
@@ -44,13 +43,13 @@ def first_array(node):
 
 
 def depth(stack) -> int:
-    """Layers in a stack: the leading axis of its stacked `layers`, plus `last`."""
+    """Return the number of layers in a stack, counting its optional `last` layer."""
     fields = stack["fields"]
     return first_array(fields["layers"])["shape"][0] + is_module(fields.get("last"))
 
 
 def layers(stack) -> str:
-    """A pair stack's depth and layer kind, e.g. "48 Pairformer"."""
+    """Describe a pair stack's depth and layer type, such as "48 Pairformer"."""
     if name(stack) == "Mol1Pairformer":
         return " + ".join(layers(stack["fields"][k]) for k in ("pairmixer", "pairformer"))
     if name(stack) == "AtlasFoldPairformer":
@@ -61,7 +60,7 @@ def layers(stack) -> str:
 
 
 def msa(node) -> tuple[str, str]:
-    """The MSA module's layers and the rows each pass draws."""
+    """Describe the MSA module's layers and how many MSA rows each pass uses."""
     if not is_module(node):
         return "—", "—"
     wrapped = name(node) in ("ResidualMSA", "TrackedMSA")
@@ -77,7 +76,7 @@ def msa(node) -> tuple[str, str]:
 
 
 def trunk(node) -> tuple[dict, list[str]]:
-    """The trunk's parts (templates, MSA, pair stack) and what else it holds."""
+    """Return the trunk's template, MSA and pair stack modules, and its other parts."""
     f = node["fields"]
     match name(node):
         case "Trunk":

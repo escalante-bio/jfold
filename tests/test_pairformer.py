@@ -1,4 +1,4 @@
-"""Pairformer parity against each upstream PyTorch implementation, with random weights."""
+"""Test the Pairformer against each upstream PyTorch implementation with random weights."""
 
 import types
 
@@ -144,7 +144,7 @@ def _forward(model, s, z, mask):
 
 @eqx.filter_jit
 def _input_grads(model, s, z, mask, num_real):
-    """Gradients of the real tokens' outputs with respect to every input."""
+    """Return the gradients of the real tokens' outputs with respect to every input."""
 
     def loss(s, z):
         s_out, z_out = model(s, z, mask, key=jax.random.key(0))
@@ -156,8 +156,7 @@ def _input_grads(model, s, z, mask, num_real):
 @pytest.mark.parametrize("padding", [0, 3], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("case", CASES)
 def test_pairformer_matches_reference(case, padding):
-    """jfold on inputs with `padding` masked garbage tokens appended matches the upstream
-    on the real tokens alone; outputs and gradients stay finite everywhere."""
+    """Check that jfold matches the upstream on the real tokens with masked garbage appended."""
     module, run_reference, convert = CASES[case]()
     randomize(module, seed=0)
     gen = torch.Generator().manual_seed(1)
@@ -187,8 +186,7 @@ def _chunk_inputs(padding=3):
 
 @pytest.mark.parametrize("chunk_size", [1, 4, 16])
 def test_triangle_chunks_match_unchunked(chunk_size):
-    """Rows in blocks (one at a time, a size that does not divide the token count, more
-    than there are) give the outputs and pair gradients of all rows at once, with padding."""
+    """Check that triangle attention in row chunks matches all rows at once, with padding."""
     model, s, z, token_mask = _chunk_inputs()
     chunked = with_triangle_chunks(model, chunk_size)
     s_ref, z_ref = _forward(model, s, z, token_mask)
@@ -206,7 +204,7 @@ def _forward_many(model, s, zs, mask):
 
 
 def test_triangle_chunks_under_vmap():
-    """A chunked stack mapped over several pairs, as the template embedder maps its own."""
+    """Check a chunked stack mapped over several pairs, as the template embedder maps its own."""
     model, s, z, token_mask = _chunk_inputs()
     zs = jax.numpy.stack([z, z.swapaxes(0, 1), 2 * z])
     out = _forward_many(with_triangle_chunks(model, 4), s, zs, token_mask)
@@ -219,8 +217,7 @@ def _chunk_sizes(tree):
 
 
 def test_with_triangle_chunks_sets_every_triangle_attention():
-    """Every `TriangleAttention` in a nested structure gets the chunk size and nothing
-    else changes; None restores the original."""
+    """Check that every nested `TriangleAttention` gets the chunk size and nothing else changes."""
     stack = protenix.pairformer_stack(randomize(_protenix()[0], seed=0))
     mol1 = protenix.mol1_pairformer(randomize(_mol1()[0], seed=0))
     model = {"trunk": (stack, mol1), "other": [stack.layers.tri_att_end, None, 3]}

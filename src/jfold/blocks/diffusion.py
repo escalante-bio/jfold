@@ -1,10 +1,5 @@
-"""The diffusion transformer (AF3 Algorithms 23-26): attention and transitions on a
-representation `a`, conditioned on `s` through adaptive layer norms and output gates, with
-attention biased by the pair.
-
-Inputs are unbatched: `a` `[N, Ca]`, `s` `[N, Cs]`, and a mask `[N]` that is False for
-padding. The same transformer runs over tokens, with pair biases `[heads, N, N]`, and over
-atoms, with `LocalAttention` and windowed biases `[heads, NW, queries, keys]`."""
+"""The diffusion transformer of AF3 Algorithms 23-26, which runs over tokens or, with
+`LocalAttention`, over atoms in windows."""
 
 import equinox as eqx
 import jax
@@ -16,8 +11,8 @@ from jfold.nn import Attention, LayerNorm, Linear, PairBias, scan_layers
 
 
 class AdaLN(eqx.Module):
-    """Adaptive layer norm (AF3 Algorithm 26): normalize `a`, then scale and shift it by
-    projections of `s`."""
+    """Adaptive layer norm from AF3 Algorithm 26, which normalizes `a` and then scales and
+    shifts it by projections of `s`."""
 
     norm_a: LayerNorm  # no scale or offset
     norm_s: LayerNorm
@@ -30,8 +25,8 @@ class AdaLN(eqx.Module):
 
 
 class RenormKeys(eqx.Module):
-    """Keys and values from a second adaptive norm of the queries' normalized input
-    (the Protenix lineage's atom attention)."""
+    """Compute keys and values with a second adaptive norm of the queries' normalized
+    input, as in Protenix."""
 
     adaln: AdaLN
 
@@ -40,8 +35,8 @@ class RenormKeys(eqx.Module):
 
 
 class SeparateKeys(eqx.Module):
-    """Keys and values from their own adaptive norm of the input (OpenFold3's atom
-    attention)."""
+    """Compute keys and values with their own adaptive norm of the input, as in
+    OpenFold3."""
 
     adaln: AdaLN
 
@@ -50,9 +45,8 @@ class SeparateKeys(eqx.Module):
 
 
 class ConditionedAttention(eqx.Module):
-    """Self-attention with pair bias, conditioned on `s` (AF3 Algorithm 24): adaptive layer
-    norm in, a gate from `s` out. Keys and values share the queries' normalized input
-    unless `keys` normalizes them separately."""
+    """Self-attention with pair bias, conditioned on `s` through an adaptive layer norm
+    and an output gate (AF3 Algorithm 24)."""
 
     adaln: AdaLN
     attention: Attention | LocalAttention
@@ -72,10 +66,10 @@ class ConditionedAttention(eqx.Module):
 
 
 class ConditionedTransition(eqx.Module):
-    """SwiGLU transition conditioned on `s` (AF3 Algorithm 25)."""
+    """A SwiGLU transition conditioned on `s` (AF3 Algorithm 25)."""
 
     adaln: AdaLN
-    linear_a: Linear  # through SiLU
+    linear_a: Linear
     linear_b: Linear
     linear_c: Linear | None  # Boltz multiplies in a third projection
     linear_out: Linear
@@ -94,7 +88,7 @@ class DiffusionTransformerLayer(eqx.Module):
 
     attention: ConditionedAttention
     transition: ConditionedTransition
-    post_norm: LayerNorm | Identity = eqx.field(default_factory=Identity)  # Boltz-2's
+    post_norm: LayerNorm | Identity = eqx.field(default_factory=Identity)
 
     def __call__(
         self,
@@ -109,16 +103,15 @@ class DiffusionTransformerLayer(eqx.Module):
 
 
 class DiffusionTransformer(eqx.Module):
-    """AF3 Algorithm 23: identical layers, stacked and scanned. Each layer's attention bias
-    comes from the pair through its own `PairBias`; `pair_biases` depends only on the pair,
-    so a sampler computes it once."""
+    """The diffusion transformer of AF3 Algorithm 23, whose `pair_biases` depend only on
+    the pair, so a sampler computes them once."""
 
     pair_bias: PairBias  # one per layer, stacked
     layers: DiffusionTransformerLayer  # stacked
 
     @property
     def windows(self) -> Windows:
-        """The atom windows its attention runs in (an atom transformer's)."""
+        """Return the atom windows that an atom transformer's attention runs in."""
         return self.layers.attention.attention.windows
 
     def pair_biases(self, z: Float[Array, "... Cz"]) -> Float[Array, "layers heads ..."]:

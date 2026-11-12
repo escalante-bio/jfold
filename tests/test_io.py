@@ -1,4 +1,4 @@
-"""Saving and loading models with `jfold.io`: no pickle, arrays readable with numpy."""
+"""Test `jfold.io`, which saves models without pickle and with arrays numpy can read."""
 
 import json
 
@@ -34,7 +34,7 @@ def _stack():
 
 
 def _holder():
-    """The kinds of value converted models hold, in one tree."""
+    """Build one tree holding the kinds of values that converted models hold."""
     return {
         "stack": eqx.nn.inference_mode(_stack(), False),
         "sampling": UpstreamSampler(
@@ -63,8 +63,6 @@ def _holder():
 
 
 def test_round_trip(tmp_path):
-    """Structure, static fields, dropout state and arrays (bfloat16 included) survive,
-    and the loaded stack computes the same thing."""
     model = _holder()
     loaded = assert_round_trip(model, tmp_path / "model")
     s, z = jnp.ones((T, 16)), jax.random.normal(jax.random.key(0), (T, T, C))
@@ -75,8 +73,7 @@ def test_round_trip(tmp_path):
 
 
 def test_files_are_plain(tmp_path):
-    """The structure is JSON naming public classes and functions; the weights load with
-    numpy alone, keyed by their path in the model."""
+    """Check that the structure is JSON naming public classes and functions."""
     io.save(_holder(), tmp_path, metadata={"source": "test"})
     structure = json.loads((tmp_path / "model.json").read_text())
     assert structure["format_version"] == io.FORMAT_VERSION
@@ -110,8 +107,7 @@ def test_mismatches_are_named(tmp_path):
 
 
 def test_missing_fields_take_their_defaults(tmp_path):
-    """A file without a field that has a default loads with the default; a missing field
-    without one is still a mismatch."""
+    """Check that a missing field loads with its default, or is a mismatch if it has none."""
     io.save(_holder(), tmp_path)
     layer = lambda s: s["model"]["dict"]["stack"]["fields"]["layers"]["fields"]
     _edit(tmp_path, lambda s: layer(s)["tri_att_start"]["fields"].pop("chunk_size"))
@@ -126,7 +122,7 @@ def test_missing_fields_take_their_defaults(tmp_path):
 
 
 def test_moved_classes_load_from_their_old_names(tmp_path):
-    """A file naming a class where it used to live loads it from where it is now."""
+    """Check that a file naming a class at its old location loads it from its new one."""
     io.save(_holder(), tmp_path)
     old = "jfold.sampling.config:SamplingConfig"
     assert io.MOVED[old] == "jfold.sampling.config:UpstreamSampler"
@@ -152,8 +148,7 @@ def test_rejects_unsaveable_values(tmp_path):
 
 
 def test_provenance(tmp_path):
-    """The standard metadata names the checkpoint by source and hash, and the upstream
-    package by its installed version; it is saved and read back without the weights."""
+    """Check the standard metadata and that it can be read back without the weights."""
     import hashlib
     import importlib.metadata
 
@@ -183,8 +178,7 @@ def test_provenance(tmp_path):
 
 
 def test_other_namespaces_only_when_named(tmp_path):
-    """A model naming functions (or classes) outside jfold and equinox saves and loads only
-    when the caller names their module prefix."""
+    """Check that outside functions and classes save and load only when their module is named."""
     import textwrap  # a module outside the defaults
 
     from jfold.nn import Linear

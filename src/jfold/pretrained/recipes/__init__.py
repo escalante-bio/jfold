@@ -1,2 +1,1 @@
-"""How each released model is fetched, built, converted and assembled: one module per
-upstream family, each with its `RELEASES` (`jfold.pretrained.Release`, by name)."""
+"""Recipes for fetching, building and converting each released model, one module per family."""

@@ -1,6 +1,6 @@
-"""The Protenix-lineage `jfold.featurize` views (Protenix, Mol-1, OpenDDE) against the upstream
-featurizations on the shared fixture systems (Protenix and Mol-1 also on the templated ones),
-their reference-conformer poses, and the jfold adapters on their output."""
+"""Test the Protenix-family `jfold.featurize` views (Protenix, Mol-1, OpenDDE) against upstream."""
+
+import json
 
 import jax
 import numpy as np
@@ -20,7 +20,7 @@ ADAPTERS = {
     "opendde": opendde_model.features,
 }
 TRANSLATE_FIRST = {"protenix": True, "mol1": True, "opendde": False}
-# Templates of another length than their chain, which Protenix and Mol-1 refuse.
+# Templates whose length differs from their chain's, which Protenix and Mol-1 refuse.
 UNEQUAL = ("dimer_template", "dimer_template_covering", "monomer_template_gap")
 TEMPLATED = sorted(set(TEMPLATE_SYSTEMS) - set(UNEQUAL))
 CASES = [(model, name) for model in VIEWS for name in sorted(SYSTEMS)] + [
@@ -34,7 +34,7 @@ def fixture(model: str, name: str) -> dict[str, np.ndarray]:
 
 
 def centred_conformer(upstream: dict) -> np.ndarray:
-    """Upstream's reference conformer, centred per residue (its pose with no augmentation)."""
+    """Return upstream's reference conformer centred per residue, as it is without augmentation."""
     conformer, uid = upstream["aux_ref_pos_conformer"], upstream["ref_space_uid"]
     return np.concatenate(
         [conformer[uid == u] - conformer[uid == u].mean(0) for u in np.unique(uid)]
@@ -43,7 +43,7 @@ def centred_conformer(upstream: dict) -> np.ndarray:
 
 @pytest.mark.parametrize("model,name", CASES)
 def test_matches_upstream(model, name):
-    """Every key equals upstream's; unposed, `ref_pos` is upstream's centred conformer."""
+    """Check that every key equals upstream's, and unposed `ref_pos` is the centred conformer."""
     ours = VIEWS[model].features(system(name))
     upstream = fixture(model, name)
     np.testing.assert_array_equal(ours["ref_pos"], centred_conformer(upstream))
@@ -55,8 +55,7 @@ def test_matches_upstream(model, name):
 
 @pytest.mark.parametrize("model,name", CASES)
 def test_pose_replays_upstream(model, name):
-    """Upstream's posed `ref_pos` from the canonical conformer and its numpy draws (one
-    uniform(-1, 1, 3) and one normal(4) per residue): checks the pose composition order."""
+    """Check the pose composition order by replaying upstream's draws on the canonical conformer."""
     upstream = fixture(model, name)
     rng = np.random.RandomState(int(upstream["aux_seed"]))
     draws = [(rng.uniform(-1.0, 1.0, size=3), rng.normal(size=4)) for _ in upstream["asym_id"]]
@@ -74,8 +73,7 @@ def test_pose_replays_upstream(model, name):
 
 @pytest.mark.parametrize("model", VIEWS)
 def test_pose_is_rigid(model):
-    """With a key, each residue's `ref_pos` is a proper rigid motion of its centred
-    conformer, with the translation in upstream's range; the other keys don't change."""
+    """Check that with a key, each residue's `ref_pos` is a proper rigid motion of its conformer."""
     view = VIEWS[model]
     canonical = view.features(system("dimer"))
     posed = view.features(system("dimer"), key=jax.random.key(0))
@@ -102,8 +100,7 @@ def test_pose_is_rigid(model):
 
 @pytest.mark.parametrize("model,name", CASES)
 def test_adapter(model, name):
-    """The jfold adapter takes the view's output; its relative positions equal upstream's
-    model-side ones where the fixture has them."""
+    """Check that the adapter accepts the view's output and gives upstream's relative positions."""
     ours = VIEWS[model].features(system(name), key=jax.random.key(0))
     upstream = fixture(model, name)
     features = ADAPTERS[model](ours)
@@ -136,7 +133,7 @@ def test_template_length_must_match(model, name):
 
 
 def test_mol1_refuses_template_it_would_drop():
-    """Upstream silently drops a template with consecutive CAs over 150 Å apart."""
+    """Check that Mol-1's view refuses a template that upstream would silently drop."""
     atoms = tuple({"N": (x, 0, 0), "CA": (x + 1, 0, 0), "C": (x + 2, 0, 0)} for x in (0, 4, 200))
     chain = Chain("A", "AAAAA", template=Template("AAAAA", (*atoms, {}, {})))
     with pytest.raises(ValueError, match="150"):
@@ -146,3 +143,78 @@ def test_mol1_refuses_template_it_would_drop():
 def test_opendde_refuses_templates():
     with pytest.raises(NotImplementedError, match="takes no templates"):
         opendde.features(system("monomer_template"))
+
+
+CONSTRAINT_CASES = json.loads((FIXTURES / "mol1_constraint_systems.json").read_text())
+
+
+def constraints(spec: dict) -> mol1.Constraints:
+    """Build `Constraints` from upstream's JSON constraints."""
+
+    def site(entry):
+        if entry is None:
+            return None
+        return mol1.Site([tuple(r) for r in entry["residue_ids"]], entry["partner_chains"])
+
+    pairs = spec.get("contact", {}).get("pairs", [])
+    return mol1.Constraints(
+        site=site(spec.get("site")),
+        exclusion=site(spec.get("exclusion")),
+        contacts=tuple((tuple(a), tuple(b)) for a, b in pairs),
+    )
+
+
+@pytest.mark.parametrize("name", sorted(CONSTRAINT_CASES))
+def test_mol1_constraints_match_upstream(name):
+    """Check that Mol-1's view with constraints equals `mol cpred`'s features."""
+    case = CONSTRAINT_CASES[name]
+    ours = mol1.features(system(case["system"]), constraints=constraints(case["constraints"]))
+    assert_matches({k: v for k, v in ours.items() if k != "ref_pos"}, FIXTURES / f"mol1_{name}.npz")
+    pair = mol1_model.features(ours).pair_features
+    np.testing.assert_array_equal(
+        pair, mol1_model.constraint_pair_features(fixture("mol1", name), len(ours["asym_id"]))
+    )
+
+
+def test_mol1_without_constraints_has_no_constraint_features():
+    assert "site_mask" not in mol1.features(system("dimer"))
+    assert mol1_model.features(mol1.features(system("dimer"))).pair_features is None
+
+
+@pytest.mark.parametrize(
+    "make, match",
+    [
+        (lambda: mol1.Site([], ["B"]), "at least one residue"),
+        (lambda: mol1.Site([("A", 3)], []), "unique and nonempty"),
+        (lambda: mol1.Site([("A", 3)], ["A"]), "are partners"),
+        (lambda: mol1.Constraints(contacts=((("A", 3), ("A", 3)),)), "with itself"),
+        (
+            lambda: mol1.Constraints(
+                site=mol1.Site([("A", 3)], ["B"]), exclusion=mol1.Site([("A", 3)], ["B"])
+            ),
+            "share residues",
+        ),
+        (
+            lambda: mol1.Constraints(
+                exclusion=mol1.Site([("A", 3)], ["B"]), contacts=((("B", 1), ("A", 3)),)
+            ),
+            "EXCLUSION scope",
+        ),
+    ],
+)
+def test_mol1_constraints_refuse_bad_input(make, match):
+    with pytest.raises(ValueError, match=match):
+        make()
+
+
+@pytest.mark.parametrize(
+    "spec, match",
+    [
+        (mol1.Constraints(site=mol1.Site([("A", 23)], ["B"])), "not in the system"),
+        (mol1.Constraints(site=mol1.Site([("A", 3)], ["C"])), "'C' is not in the system"),
+        (mol1.Constraints(contacts=((("A", 1), ("C", 1)),)), "not in the system"),
+    ],
+)
+def test_mol1_constraints_refuse_missing_residues(spec, match):
+    with pytest.raises(ValueError, match=match):
+        mol1.features(system("dimer"), constraints=spec)

@@ -1,8 +1,4 @@
-"""End-to-end parity with the released AtlasFold-M and AtlasFold checkpoints on AtlasLM-3B:
-AtlasLM's features, two trunk passes, one denoising step, confidence and distogram, on a
-small complex (AtlasFold-M) and a monomer (AtlasFold), featurized and padded by the
-upstream runners. Downloads weights; run with `pytest -m checkpoint`. The reference runs on
-the CPU in float32."""
+"""Compare jfold with the released AtlasFold-M and AtlasFold checkpoints, using AtlasLM-3B."""
 
 import equinox as eqx
 import jax
@@ -22,7 +18,7 @@ NOISE_LEVEL = 10.0
 
 
 def _batch(name: str) -> dict[str, np.ndarray]:
-    """The runner's features for one target, in its length bucket (unbatched)."""
+    """Featurize one target with the upstream runner, padded to its length bucket."""
     from atlasfold.common.protein import ProteinMultimer
     from atlasfold.runner import FoldingRunner
     from atlasfold.runner_multimer import MultimerFoldingRunner
@@ -90,7 +86,7 @@ def test_atlasfold(name):
 
     model = _convert(name, reference)
     assert_schedule(model.sampling, SamplingConfig(num_steps=STEPS).get_sigmas())
-    model = assert_round_trip(model)  # as stored: without AtlasLM
+    model = assert_round_trip(model)  # the saved model omits AtlasLM
     model = eqx.tree_at(
         lambda m: m.trunk.atlaslm,
         model,
@@ -126,7 +122,7 @@ def test_atlasfold(name):
         "z": rel_err(state.z[pair], ref["z"][pair]),
     }
 
-    # Later stages from the reference trunk, so errors do not compound.
+    # Run the later stages from the reference trunk so errors do not compound.
     ref_state = type(state)(s=jnp.array(ref["s"]), z=jnp.array(ref["z"]))
 
     @eqx.filter_jit

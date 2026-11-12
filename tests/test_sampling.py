@@ -28,7 +28,7 @@ NUM_ATOMS = 32
 
 
 def _denoise_to(target: Float[Array, "A 3"], x, sigma):
-    """The exact x0-predictor for data concentrated on a single point cloud."""
+    """Return the exact x0-predictor for data concentrated on a single point cloud."""
     del x, sigma
     return target
 
@@ -242,13 +242,11 @@ def test_gradient_flows_through_sampler(align, update):
     assert float(jnp.abs(grad).max()) > 0.0
 
 
-# Padding and per-model settings ---------------------------------------------------------
-
 PADDING = 7
 
 
 def _halfway(target, x, sigma):
-    """A denoiser that reads `x`, atom by atom: real atoms never see the padding."""
+    """Move `x` halfway to `target` atom by atom, so real atoms never see the padding."""
     del sigma
     return 0.5 * (x + target)
 
@@ -264,8 +262,7 @@ def _halfway(target, x, sigma):
     ids=["no-align", "align", "align-stop-gradient", "augment-after-noise"],
 )
 def test_sampling_ignores_padding(policy):
-    """With masked centring, the real atoms' sample is the same with garbage padding
-    atoms appended, given the same noise for the real atoms."""
+    """Check that with masked centring, garbage padding atoms leave the real sample unchanged."""
     sampler = dataclasses.replace(
         SamplerSettings(sigmas=_sigmas(12), center=masked_centering), **policy
     )
@@ -281,7 +278,7 @@ def test_sampling_ignores_padding(policy):
 
 
 def pad_noise(noise: Noise, padding: int = PADDING) -> Noise:
-    """`noise` with garbage draws for `padding` appended atoms."""
+    """Append garbage draws for `padding` atoms to `noise`."""
     extra = 1e2 * jax.random.normal(jax.random.key(11), (noise.churn.shape[0] + 1, padding, 3))
     return dataclasses.replace(
         noise,
@@ -321,7 +318,7 @@ def test_sampling_config_builds_the_settings():
 
 
 def test_structure_sampler():
-    """A `StructureSampler` samples as the loop does, and over a batch of keys."""
+    """Check that a `StructureSampler` samples as the loop does, also over a batch of keys."""
     from jfold.sampling import StructureSampler
 
     target = _target()

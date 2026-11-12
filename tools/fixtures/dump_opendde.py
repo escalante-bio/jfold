@@ -1,34 +1,6 @@
-"""Upstream OpenDDE feature dicts for the shared fixture systems.
-
-Runs OpenDDE's inference featurizer (`opendde.data.inference.infer_dataloader
-.InferenceDataset.process_one`, which `get_inference_dataloader` calls per entry, as in
-OpenDDE's inference runner and jfold's OpenDDE test) with the `opendde_v1` inference config,
-templates off, on every system in `tests/featurize/data/systems.json`, and saves
-`tests/featurize/data/opendde_<system>.npz` (numpy arrays only).
-
-Run from `~/jfold`:
+"""Write OpenDDE's upstream features for the test systems to `tests/featurize/data/`.
 
     LAYERNORM_TYPE=torch uv run python tools/fixtures/dump_opendde.py
-
-Needs OpenDDE's CCD data (`configs.data.ccd_components_file` and its RDKit pickle,
-`~/.cache/opendde/common/` by default; `opendde.utils.download.download_inference_cache`
-fetches them, as `tests/checkpoints/test_checkpoint_opendde.py` does).
-
-MSA: a chain with an `msa` passes the a3m as `proteinChain.unpairedMsaPath` and the
-config runs with `use_msa=True`; systems without any MSA run with `use_msa=False`
-(OpenDDE's single-sequence path, a dummy MSA from `restype`), as jfold's test does.
-
-Determinism: the per-residue `ref_pos` augmentation draws from numpy's global RNG
-(`np.random.uniform` translation, scipy `Rotation.random()` rotation). numpy, `random`
-and torch are seeded with `SEED` right before each system, and `process_one` runs in this
-process (no DataLoader workers), so the files are reproducible bit-for-bit.
-
-Keys: every tensor of `input_feature_dict` as a numpy array under its own name, plus
-`aux_*` extras (not upstream features): `aux_ref_pos_conformer` (the reference conformer
-per atom before centring and augmentation, `atom_array.ref_pos`), `aux_atom_name`,
-`aux_res_name`, `aux_element`, `aux_seed`, and `aux_relp` / `aux_structural_relp`
-(the residue- and structural-token relative-position features the model computes from
-the dict, `RelativePositionEncoding.generate_relp`, r_max=32, s_max=2).
 """
 
 import json
@@ -47,8 +19,7 @@ FIXTURES = HERE.parents[1] / "tests" / "featurize" / "data"
 
 
 def biotite_compat():
-    """OpenDDE's featurizer reaches into `BondList` internals that biotite 1.7 (a compiled
-    extension) does not expose; restore the few it uses (as jfold's OpenDDE test does)."""
+    """Add the private `BondList` attributes OpenDDE's featurizer uses, which biotite 1.7 lacks."""
     import biotite.structure as struc
 
     bonds = struc.BondList
@@ -80,7 +51,7 @@ def configs(use_msa: bool):
 
 
 def sample(name: str, system: dict) -> tuple[dict, bool]:
-    """An OpenDDE input-JSON entry and whether any chain has an MSA."""
+    """Return an OpenDDE input JSON entry and whether any chain has an MSA."""
     sequences, use_msa = [], False
     for chain in system["chains"]:
         entry = {"sequence": chain["sequence"], "count": 1}
@@ -92,7 +63,7 @@ def sample(name: str, system: dict) -> tuple[dict, bool]:
 
 
 def relp(feats: dict) -> tuple[np.ndarray, np.ndarray]:
-    """The model's residue and structural-token relative-position features."""
+    """Compute the model's relative-position features for residues and structural tokens."""
     import types
 
     import torch
@@ -101,7 +72,7 @@ def relp(feats: dict) -> tuple[np.ndarray, np.ndarray]:
     module = types.SimpleNamespace(r_max=32, s_max=2)
     ids = ("asym_id", "residue_index", "entity_id", "sym_id")
     residue = {k: feats[k] for k in (*ids, "token_index")}
-    # As `OpenDDE.expand_to_structural_tokens` builds the structural dict.
+    # Build the structural features as `OpenDDE.expand_to_structural_tokens` does.
     parent = feats["parent_residue_idx"].long()
     structural = {k: feats[k].index_select(-1, parent) for k in ids}
     structural["token_index"] = feats["structural_token_index"].long()

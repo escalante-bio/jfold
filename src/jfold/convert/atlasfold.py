@@ -1,5 +1,4 @@
-"""AtlasFold's modules (`atlasfold`'s `AtlasFold` and `AtlasFold_Multimer`) and AtlasLM
-(`atlaslm`'s `AtlasLM`)."""
+"""Convert AtlasFold, AtlasFold-Multimer and the AtlasLM language model."""
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -68,16 +67,12 @@ from jfold.sampling import UpstreamSampler, masked_centering, no_alignment
 
 
 def _split(m, num: int) -> list[Linear]:
-    """A bias-free linear's outputs, split into `num` equal linears (torch's `chunk`)."""
     return [Linear(weight=w) for w in jnp.split(array(m.weight), num)]
 
 
 def norm_linear(m) -> NormLinear:
-    """A `Sequential(LayerNorm, Linear)`."""
+    """Convert a `Sequential(LayerNorm, Linear)`."""
     return NormLinear(norm=layer_norm(m[0]), linear=linear(m[1]))
-
-
-# Pair blocks
 
 
 def triangle_multiplication(m, *, outgoing: bool) -> TriangleMultiplication:
@@ -93,7 +88,7 @@ def triangle_multiplication(m, *, outgoing: bool) -> TriangleMultiplication:
 
 
 def triangle_attention(m) -> TriangleAttention:
-    """Either node's: the block transposes the pair for the ending node."""
+    """Convert a triangle attention module for either node."""
     linear_q, linear_k, linear_v = _split(m.linear_qkv, 3)
     return TriangleAttention(
         norm=layer_norm(m.layernorm),
@@ -110,7 +105,7 @@ def triangle_attention(m) -> TriangleAttention:
 
 
 def transition(m) -> Transition:
-    """`Transition`: a `Sequential(LayerNorm, SwiGLU, Linear)`."""
+    """Convert a `Transition`, which is a `Sequential(LayerNorm, SwiGLU, Linear)`."""
     linear_a, linear_b = _split(m[1].linear, 2)
     return Transition(
         norm=layer_norm(m[0]), linear_a=linear_a, linear_b=linear_b, linear_out=linear(m[2])
@@ -118,7 +113,7 @@ def transition(m) -> Transition:
 
 
 def attention(m) -> Attention:
-    """A `SelfAttention` or `CrossAttention`'s projections."""
+    """Convert the projections of a `SelfAttention` or `CrossAttention`."""
     return Attention(
         linear_q=linear(m.attn.linear_q),
         linear_k=linear(m.attn.linear_k),
@@ -130,7 +125,7 @@ def attention(m) -> Attention:
 
 
 def pair_block(m) -> PairformerLayer:
-    """A `PairBlock`'s pair and single updates (its single-to-pair step: `lm_layer`)."""
+    """Convert a `PairBlock`'s pair and single updates."""
     single = None
     if m.pair_to_single:
         single = SingleUpdate(
@@ -161,8 +156,8 @@ def pair_stack(blocks) -> PairformerStack:
 
 
 def product_difference(m) -> SinglesToPair:
-    """`PairwiseProdDiff`'s pair, `linear_out([a_i - b_j, a_i * b_j])` with `a, b` the halves
-    of `linear_in`, as `SinglesToPair` (on the normalized single)."""
+    """Convert `PairwiseProdDiff`, `linear_out([a_i - b_j, a_i * b_j])` with `a, b` the
+    halves of `linear_in`, to a `SinglesToPair`."""
     w_in, b_in = array(m.linear_in.weight), array(m.linear_in.bias)
     (w_a, w_b), (b_a, b_b) = jnp.split(w_in, 2), jnp.split(b_in, 2)
     w_diff, w_prod = jnp.split(array(m.linear_out.weight), 2, axis=1)
@@ -176,7 +171,7 @@ def product_difference(m) -> SinglesToPair:
 
 
 def lm_layer(m) -> LMLayer:
-    """An `LMStack` block: single to pair, then the pair and single updates."""
+    """Convert an `LMStack` block."""
     return LMLayer(
         norm=layer_norm(m.pairwise_prod_diff.layernorm),
         to_pair=product_difference(m.pairwise_prod_diff),
@@ -185,11 +180,8 @@ def lm_layer(m) -> LMLayer:
     )
 
 
-# The trunk
-
-
 def atlaslm(m) -> AtlasLM:
-    """`AtlasLM`, without its sequence head."""
+    """Convert `AtlasLM` without its sequence head."""
     blocks = m.transformer.blocks
     layers = []
     for b in blocks:
@@ -243,7 +235,7 @@ def language_model_embedder(m, *, intra_chain: bool) -> LanguageModelEmbedder:
 
 
 def pairformer(m) -> AtlasFoldPairformer:
-    """The main `PairformerStack`: its pair-only blocks, then the rest."""
+    """Convert the main `PairformerStack`, whose first blocks update only the pair."""
     blocks = list(m.blocks)
     first_full = next(i for i, b in enumerate(blocks) if b.pair_to_single)
     if not all(b.pair_to_single for b in blocks[first_full:]):
@@ -285,9 +277,6 @@ def trunk(m, *, multimer: bool, mlm_rate: float) -> AtlasFoldTrunk:
     )
 
 
-# Diffusion
-
-
 def adaln(m) -> AdaLN:
     return AdaLN(
         norm_a=layer_norm(m.layernorm),
@@ -310,8 +299,7 @@ def conditioned_transition(m) -> ConditionedTransition:
 
 
 def transformer_layer(m) -> DiffusionTransformerLayer:
-    """A `DiffusionTransformerBlock` (self-attention) or `AtomTransformerBlock` (keys with
-    their own adaptive norm)."""
+    """Convert a `DiffusionTransformerBlock` or `AtomTransformerBlock`."""
     attn = m.attention
     cross = hasattr(attn, "adaln_a_k")
     return DiffusionTransformerLayer(
@@ -326,8 +314,8 @@ def transformer_layer(m) -> DiffusionTransformerLayer:
 
 
 def diffusion_transformer(m, pair_conditioning) -> DiffusionTransformer:
-    """The token transformer, each layer's bias from `PairConditioning`'s shared norm and
-    its slice of the shared projection."""
+    """Convert the token transformer, slicing `PairConditioning`'s shared bias projection
+    per layer."""
     norm = layer_norm(pair_conditioning.layernorm_bias)
     weights = jnp.split(array(pair_conditioning.linear_bias.weight), len(m.blocks))
     return DiffusionTransformer(
@@ -337,8 +325,8 @@ def diffusion_transformer(m, pair_conditioning) -> DiffusionTransformer:
 
 
 def atom_transformer(m) -> AtomTransformer:
-    """An `AtomAttentionStack`: its bias projection and transformer, in atom windows of
-    4 residues with keys 4 residues either side."""
+    """Convert an `AtomAttentionStack` with 4-residue query windows and keys 4 residues
+    either side."""
     windows = CenteredWindows(queries=4 * ATOMS, keys=12 * ATOMS)
     layers = eqx.tree_at(
         lambda layer: layer.attention.attention,
@@ -357,7 +345,7 @@ def diffusion_conditioning(head) -> DiffusionConditioning:
         transitions_z=tuple(transition(t) for t in pair.transitions),
         norm_s=layer_norm(single.proj_single_cond[0]),
         linear_s=linear(single.proj_single_cond[1]),
-        # Upstream's `cos(2π t w + b)`: the bias is outside the 2π.
+        # Upstream computes `cos(2π t w + b)`, with the bias outside the 2π.
         fourier=FourierEmbedding(
             weight=array(fourier.w)[0], bias=array(fourier.b)[0] / (2 * np.pi)
         ),
@@ -369,7 +357,7 @@ def diffusion_conditioning(head) -> DiffusionConditioning:
 
 
 def diffusion_module(m) -> DiffusionModule:
-    """`DiffusionHead`; `m` the model, for the atom-pair encoding's table."""
+    """Convert the `DiffusionHead`, reading the atom-pair table off the whole model `m`."""
     head = m.diffusion_head
     score = head.score_model
     encoder, decoder = score.atom_encoder, score.atom_decoder
@@ -397,9 +385,6 @@ def diffusion_module(m) -> DiffusionModule:
     )
 
 
-# Heads
-
-
 def _distances(m) -> DistanceEmbedding:
     return DistanceEmbedding(
         edges=jnp.linspace(m.min_dist, m.max_dist, m.num_bins - 1),
@@ -416,7 +401,7 @@ def _embed_residues(m) -> SinglesToPair:
 
 
 def multimer_confidence(m) -> MultimerConfidence:
-    """`ConfidenceHead_Multimer`."""
+    """Convert `ConfidenceHead_Multimer`."""
     return MultimerConfidence(
         project_s=norm_linear(m.proj_s),
         module=ConfidenceModule(
@@ -436,7 +421,7 @@ def multimer_confidence(m) -> MultimerConfidence:
 
 
 def monomer_confidence(m) -> MonomerConfidence:
-    """`ConfidenceHead_Monomer`."""
+    """Convert `ConfidenceHead_Monomer`."""
     return MonomerConfidence(
         singles_to_pair=_embed_residues(m),
         distances=_distances(m),
@@ -449,15 +434,12 @@ def monomer_confidence(m) -> MonomerConfidence:
 
 
 def distogram_head(m) -> PairHead:
-    """`linear(z)` symmetrized after the projection (bias-free, so before is the same)."""
+    """Convert the bias-free distogram head, which upstream symmetrizes after projecting."""
     return PairHead(linear=linear(m.linear), symmetric=True)
 
 
 def sampling(head, config, *, num_steps: int) -> UpstreamSampler:
-    """`DiffusionHead.sample`'s settings for a `SamplingConfig` (`config`): AF3's schedule
-    ending at its smallest level, re-centred, randomly rotated and translated, no
-    alignment. `num_steps`: the runner's (200 for AtlasFold-M; AtlasFold's grows with
-    length, 20 up to 512 residues)."""
+    """Return `DiffusionHead.sample`'s settings for a `SamplingConfig` and `num_steps`."""
     cfg = config
     return UpstreamSampler(
         sigma_data=float(head.sigma_data),
@@ -478,10 +460,8 @@ def sampling(head, config, *, num_steps: int) -> UpstreamSampler:
 
 
 def structure_model(m, sampling_config, *, mlm_rate: float, num_steps: int) -> StructureModel:
-    """`AtlasFold` or `AtlasFold_Multimer`, without its language model (`atlaslm`
-    converts it; `jfold.pretrained` attaches it as `trunk.atlaslm`). The runner's sampler
-    (`sampling_config`, a `SamplingConfig`, for `num_steps` steps) and masking rate
-    (`mlm_rate`)."""
+    """Convert `AtlasFold` or `AtlasFold_Multimer` without its language model, which
+    `atlaslm` converts."""
     multimer = hasattr(m, "template_module")
     return StructureModel(
         input_embedder=ResidueEmbedder(),

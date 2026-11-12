@@ -1,46 +1,6 @@
-"""Dump OpenFold3's upstream inference featurization of the shared fixture systems.
-
-Run from the jfold root:
-
-    uv run python tools/fixtures/dump_openfold3.py
-
-Writes `tests/featurize/data/openfold3_<system>.npz` for every system in
-`tests/featurize/data/systems.json` and `template_systems.json`;
+"""Write OpenFold3's upstream features for the test systems to `tests/featurize/data/`.
 
     uv run python tools/fixtures/dump_openfold3.py [system ...]
-
-dumps the named systems only. Each file holds the tensors of `InferenceDataset(config)[0]`
-as numpy arrays, unbatched as the dataset item comes out (the layout
-`jfold.models.openfold3.features` takes), in upstream's dtypes (int32 / float32). The
-bookkeeping entries `atom_array`, `query_id`, `seed`, `repeated_sample` and `valid_sample`
-are dropped.
-
-The pipeline is driven as jfold's checkpoint test drives it:
-`MSASettings(subsample_main=False)`, `TemplateSettings(take_top_k=True)`; templates as below.
-Chains without an MSA get OpenFold3's query-only dummy MSA
-(`augment_main_msa_with_query_sequence`). A chain with a precomputed a3m is passed through
-`Chain.main_msa_file_paths`; the file is copied to `<tmp>/<chain id>/colabfold_main.a3m`
-because OpenFold3 keys each alignment by its file stem and silently skips stems that are
-not in `MSASettings.max_seq_counts` / `aln_order` (a file called `chain_A.a3m` would be
-dropped).
-
-Templates (PDB files from `make_templates.py`) take the route upstream offers for a template
-structure without a precomputed alignment: one mmCIF, `<tmp>/structures/tmpl.cif`, holds
-every templated chain, renamed to its query chain (`label_asym_id`), each its own entity
-whose sequence is the template's (its residues with coordinates, unless the system gives
-the sequence), with the metadata upstream reads (canonical sequence, `pdbx_poly_seq_scheme`,
-chem_comp types, a release date); each templated chain's `template_alignment_file_path` is
-an `.m8` file naming `tmpl_<chain id>`, which upstream realigns with Kalign.
-`TemplatePreprocessor` runs first, as the inference data module runs it. The installed
-`InferenceDataset` passes `template_cache_directory=None` to
-`process_template_structures_of3`, which then drops every template; the script passes the
-preprocessor's cache directory, as current upstream OpenFold3 does.
-
-Randomness: the only random feature is `ref_pos` (an RDKit ETKDGv3 conformer per
-residue whose seed is drawn from Python's global `random`, then a random rotation and a
-unit-normal translation drawn from torch's global generator). Seeding `random`,
-`numpy.random` and `torch` right before featurizing makes the output reproducible for a
-given RDKit / torch build; the script checks this by featurizing every system twice.
 """
 
 import json
@@ -63,16 +23,13 @@ DROP = ("atom_array", "query_id", "seed", "repeated_sample", "valid_sample")
 
 
 def featurize(system: dict, seed: int = SEED) -> dict[str, np.ndarray]:
-    """The upstream batch of one system, as numpy arrays without a batch dimension."""
+    """Featurize one system with upstream code and return unbatched NumPy arrays."""
     with warnings.catch_warnings():
-        # Query-only chains warn that a dummy MSA is used, as intended.
         warnings.simplefilter("ignore")
         return _featurize(system, seed)
 
 
 def _template_cif(system: dict, path: Path) -> None:
-    """Write the templated chains of `system` to one mmCIF at `path`, with the metadata
-    OpenFold3's template pipeline reads."""
     import gemmi
 
     from jfold.featurize.system import THREE_LETTER
@@ -121,8 +78,6 @@ def _template_cif(system: dict, path: Path) -> None:
 
 
 def _m8(chain: dict, path: Path) -> Path:
-    """A template alignment for `chain` naming its template, `tmpl_<chain id>`, without a
-    residue-wise alignment."""
     n = len(chain["sequence"])
     path.parent.mkdir(parents=True)
     path.write_text(f"query\ttmpl_{chain['id']}\t1.0\t{n}\t0\t0\t1\t{n}\t1\t{n}\t0.001\t100\n")
@@ -166,8 +121,7 @@ def _featurize(system: dict, seed: int) -> dict[str, np.ndarray]:
         for c in system["chains"]:
             msa_paths = None
             if "msa" in c:
-                # The parent directory names the alignment's representative; the stem
-                # must be one OpenFold3 recognizes.
+                # OpenFold3 skips alignment files whose names it does not recognise.
                 target = tmp / "msas" / c["id"] / "colabfold_main.a3m"
                 target.parent.mkdir(parents=True)
                 shutil.copy(FIXTURES / c["msa"], target)

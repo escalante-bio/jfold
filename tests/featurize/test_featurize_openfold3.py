@@ -1,8 +1,4 @@
-"""`jfold.featurize.views.openfold3` against OpenFold3's upstream featurization on the shared
-fixture systems and the template systems. Every feature but `ref_pos` matches exactly (unit
-vectors to float32 rounding); upstream embeds a fresh random RDKit conformer per residue, so
-`ref_pos` is checked structurally: the same atoms with the same bond lengths, and each
-residue a rigid motion of a table conformer."""
+"""Test `jfold.featurize.views.openfold3` against OpenFold3's featurization."""
 
 import jax
 import numpy as np
@@ -29,7 +25,7 @@ def residue_coords(f: dict, token: int) -> np.ndarray:
 
 
 def bonds(x: np.ndarray) -> np.ndarray:
-    """Bonded atom pairs `[B, 2]` of a heavy-atom conformer, by distance."""
+    """Return the bonded atom pairs `[B, 2]` of a heavy-atom conformer, found by distance."""
     d = np.linalg.norm(x[:, None] - x[None], axis=-1)
     i, j = np.triu_indices(len(x), 1)
     bonded = d[i, j] < BOND
@@ -41,7 +37,7 @@ def bond_lengths(x: np.ndarray, pairs: np.ndarray) -> np.ndarray:
 
 
 def rigid_rmsd(x: np.ndarray, y: np.ndarray) -> float:
-    """RMSD of `y` to the best proper rigid motion of `x` (Kabsch, no reflection)."""
+    """Return the RMSD of `y` to the best proper rigid motion of `x` (Kabsch, no reflection)."""
     x, y = x - x.mean(0), y - y.mean(0)
     u, _, vt = np.linalg.svd(x.T @ y)
     s = np.diag([1, 1, np.sign(np.linalg.det(u @ vt))])
@@ -64,9 +60,7 @@ def test_openfold3(name):
 
 @pytest.mark.parametrize("name", sorted(SYSTEMS))
 def test_openfold3_ref_pos(name):
-    """Atoms, names and elements match exactly (above); per residue, bond lengths agree
-    with upstream's conformer, and the posed coordinates are a rigid motion of one of the
-    table's conformers (conformer 0, centred and unposed, without a key)."""
+    """Check `ref_pos` structurally, since upstream draws a random RDKit conformer per residue."""
     table = openfold3.residues()
     upstream = fixture(name)
     unposed = openfold3.features(system(name))
@@ -78,8 +72,8 @@ def test_openfold3_ref_pos(name):
         theirs = residue_coords(upstream, token)
         pairs = bonds(conformers[0])
         assert np.array_equal(bonds(theirs), pairs), token
-        # ETKDG does not minimize, so bond lengths vary by up to ~0.1 A between draws:
-        # upstream's draw is within 0.05 A of some table conformer, and of every one to 0.1 A.
+        # ETKDG does not minimize, so bond lengths vary by up to ~0.1 A between draws. Upstream's
+        # draw is within 0.05 A of some table conformer and within 0.1 A of all of them.
         diff = np.abs(bond_lengths(conformers, pairs) - bond_lengths(theirs, pairs)).max(-1)
         assert diff.min() < 0.05 and diff.max() < 0.1, (token, diff.min(), diff.max())
 
@@ -89,7 +83,7 @@ def test_openfold3_ref_pos(name):
 
 
 def test_openfold3_conformer_draws():
-    """Different keys give different draws: conformers and poses vary across residues."""
+    """Check that different keys give different conformers and poses across residues."""
     f = openfold3.features(system("dimer"), key=jax.random.key(1))
     g = openfold3.features(system("dimer"), key=jax.random.key(2))
     assert not np.allclose(f["ref_pos"], g["ref_pos"])
@@ -98,8 +92,7 @@ def test_openfold3_conformer_draws():
 
 
 def test_openfold3_table_follows_upstream():
-    """The table's conformer s is upstream's conformer with `random.seed(s)`: the fixtures
-    seed `random` with 0 before featurizing, so their first residue is conformer 0."""
+    """Check that table conformer s is upstream's conformer after `random.seed(s)`."""
     table = openfold3.residues()
     for name in SYSTEMS:
         first = THREE_LETTER[sequence(name)[0]]
@@ -123,8 +116,7 @@ def test_openfold3_partial_templates_are_dropped(name):
 
 
 def test_openfold3_templates_by_sequence():
-    """A chain without a template takes the one of a chain with its sequence; distogram and
-    unit vectors stay within chains."""
+    """Check that a chain without a template uses the template of a chain with its sequence."""
     f = openfold3.features(system("homodimer_template"))
     n = len(TEMPLATE_SYSTEMS["homodimer_template"]["chains"][0]["sequence"])
     np.testing.assert_array_equal(f["template_restype"][0, :n], f["template_restype"][0, n:])
@@ -142,7 +134,7 @@ def test_openfold3_template_model_features():
 
 
 def test_openfold3_identical_template_skips_kalign():
-    """The shortcut for a template with its chain's sequence is Kalign's alignment."""
+    """Check that skipping Kalign for a template identical to its chain gives Kalign's result."""
     kalign = pytest.importorskip("kalign")
     sequence = TEMPLATE_SYSTEMS["monomer_template"]["chains"][0]["sequence"]
     rows = kalign.align([sequence] * 3)

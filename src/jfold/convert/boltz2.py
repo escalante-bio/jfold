@@ -1,5 +1,4 @@
-"""A whole Boltz-2 model (`boltz.model.models.boltz2.Boltz2`), from the block converters in
-`jfold.convert.boltz`. Inputs come from `jfold.models.boltz2.features`."""
+"""Convert a whole Boltz-2 model using the block converters in `jfold.convert.boltz`."""
 
 import dataclasses
 
@@ -31,8 +30,7 @@ from jfold.sampling import (
 
 
 def bonds(token_bonds, token_bonds_type) -> Linear:
-    """The bond embedding of `jfold.models.boltz2.bond_features`: `token_bonds` on the
-    bonded flag plus the `token_bonds_type` embedding of the bond type."""
+    """Merge Boltz-2's bond linear and bond-type embedding into one `Linear`."""
     if token_bonds.bias is not None:
         raise ValueError("expected a bias-free token bond linear")
     return Linear(
@@ -55,8 +53,7 @@ def contact_conditioning(m) -> boltz2.ContactConditioning:
 
 
 def pair_inputs(m) -> boltz2.PairInputs:
-    """The relative position, bond and contact embeddings of a module holding them (the
-    confidence module's own)."""
+    """Convert the confidence module's relative position, bond and contact embeddings."""
     return boltz2.PairInputs(
         relative_positions=relative_positions(m.rel_pos),
         bonds=bonds(m.token_bonds, m.token_bonds_type),
@@ -65,8 +62,7 @@ def pair_inputs(m) -> boltz2.PairInputs:
 
 
 def structure_model(m) -> StructureModel:
-    """A whole Boltz-2 model, as released (`bond_type_feature`, templates, token-level
-    confidence with separate intra- and inter-chain PAE and PDE heads)."""
+    """Convert a released Boltz-2 model (`boltz.model.models.boltz2.Boltz2`)."""
     if not (m.bond_type_feature and m.use_templates):
         raise NotImplementedError("Boltz-2 without bond types or templates")
     if not m.confidence_module.add_z_input_to_z:
@@ -92,7 +88,7 @@ def structure_model(m) -> StructureModel:
             templates=template_embedder(m.template_module),
             msa=ResidualMSA(module=msa_module(m.msa_module, max_rows=msa_max_rows(m.msa_module))),
         ),
-        # The diffusion module reads the trunk's relative position embedding.
+        # The diffusion module reuses the trunk's relative position embedding.
         diffusion=dataclasses.replace(
             diffusion_module(m.structure_module.score_model, conditioning=m.diffusion_conditioning),
             relative_positions=trunk_relative_positions,
@@ -106,15 +102,13 @@ def structure_model(m) -> StructureModel:
 
 
 def msa_max_rows(m) -> int | None:
-    """The MSA rows Boltz-2's `MSAModule` draws per pass: `num_subsampled_msa` if it
-    subsamples (`boltz predict` does), else every row."""
+    """Return the MSA rows Boltz-2 draws per pass, or None for every row."""
     return m.num_subsampled_msa if m.subsample_msa else None
 
 
 def sampling(model) -> UpstreamSampler:
-    """`AtomDiffusion.sample`'s settings, with the step count `boltz predict` passes it
-    (`predict_args["sampling_steps"]`): re-centred, randomly rotated and translated, the
-    noisy sample aligned onto the denoised one."""
+    """Return Boltz-2's `AtomDiffusion.sample` settings with `boltz predict`'s step
+    count."""
     m = model.structure_module
     return UpstreamSampler(
         sigma_data=float(m.sigma_data),

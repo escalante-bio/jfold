@@ -1,5 +1,4 @@
-"""Protenix releases (`NAMES`: mini, tiny, base v1.0.0, base 2025-06-30, v2), as `protenix
-predict` builds them; and helpers shared by the Protenix-lineage recipes (Mol-1, OpenDDE)."""
+"""Protenix releases, built as `protenix predict` does, plus helpers for Mol-1 and OpenDDE."""
 
 import shutil
 import urllib.request
@@ -11,8 +10,8 @@ from jfold.pretrained import Release
 
 
 def download(url: str, path: Path) -> None:
-    """`url` to `path`, through a partial file so an interrupted download is not mistaken for
-    a checkpoint."""
+    """Download `url` to `path` through a temporary file, so an interrupted download is not
+    mistaken for a checkpoint."""
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(path.suffix + ".partial")
     with urllib.request.urlopen(url) as response, open(partial, "wb") as f:
@@ -21,9 +20,7 @@ def download(url: str, path: Path) -> None:
 
 
 def load_state(model, checkpoint: Path, *, strict: bool = True):
-    """Load a Protenix-lineage training checkpoint (`{"model": state}`, keys possibly with
-    DDP's `module.` prefix) into `model` on the CPU, as the upstream runners do; returns it in
-    eval mode."""
+    """Load a Protenix-style training checkpoint into `model` on the CPU, in eval mode."""
     import torch
 
     state = torch.load(checkpoint, map_location="cpu", weights_only=False)["model"]
@@ -32,7 +29,7 @@ def load_state(model, checkpoint: Path, *, strict: bool = True):
 
 
 def deep_update(d: dict, u: dict) -> dict:
-    """Merge `u` into `d` recursively (in place)."""
+    """Merge `u` into `d` recursively, in place."""
     for k, v in u.items():
         if isinstance(v, dict) and isinstance(d.get(k), dict):
             deep_update(d[k], v)
@@ -42,8 +39,7 @@ def deep_update(d: dict, u: dict) -> dict:
 
 
 def configs(name: str):
-    """The inference configs of `protenix predict --model_name name`: the base, data and
-    inference defaults, then the model's own settings (`configs_model_type`)."""
+    """Return the inference config that `protenix predict --model_name name` uses."""
     from ml_collections.config_dict import ConfigDict
     from protenix.config import parse_configs
     from protenix.configs.configs_base import configs as configs_base
@@ -71,7 +67,6 @@ def _fetch(name: str):
 
 def _build(name: str):
     def build(checkpoint: Path):
-        """As `protenix predict`'s `InferenceRunner` builds and loads it, on the CPU."""
         from protenix.model.protenix import Protenix
 
         cfg = configs(name)
@@ -97,7 +92,7 @@ def _release(name: str) -> Release:
     )
 
 
-# jfold name -> upstream model name (`protenix predict --model_name`).
+# jfold name -> upstream model name, as passed to `protenix predict --model_name`.
 NAMES = {
     "protenix_mini": "protenix_mini_default_v0.5.0",
     "protenix_tiny": "protenix_tiny_default_v0.5.0",

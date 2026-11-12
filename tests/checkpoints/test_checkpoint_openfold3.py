@@ -1,6 +1,4 @@
-"""End-to-end parity with the released OpenFold3 checkpoint: the trunk, one denoising step,
-confidence and distogram on a small real complex, from OpenFold3's own featurization.
-Downloads weights; run with `pytest -m checkpoint`."""
+"""Compare jfold with the released OpenFold3 checkpoint on a small real complex."""
 
 import tempfile
 from pathlib import Path
@@ -30,8 +28,7 @@ def _trunk(model, features):
 
 
 def _reference_model():
-    """The released checkpoint as `jfold.pretrained` builds it (as OpenFold3's inference
-    does), from OpenFold3's default parameter directory."""
+    """Load the released checkpoint as OpenFold3's inference does."""
     from jopenfold3._vendor.openfold3.entry_points.parameters import get_default_checkpoint_dir
 
     from jfold import pretrained
@@ -42,8 +39,7 @@ def _reference_model():
 
 
 def _featurize():
-    """OpenFold3's inference featurization of `SEQUENCES` (single-sequence MSAs, no
-    templates)."""
+    """Featurize `SEQUENCES` as OpenFold3's inference does, with single-sequence MSAs."""
     from jopenfold3._vendor.openfold3.core.data.framework.single_datasets.inference import (
         InferenceDataset,
     )
@@ -101,7 +97,7 @@ def test_openfold3():
     reference = _reference_model()
     batch = _featurize()
     batched = {k: v[None] for k, v in batch.items()}
-    # The model's view after the trunk: a sample dimension on every feature.
+    # After the trunk, the model expects a sample dimension on every feature.
     sampled = {k: v[:, None] for k, v in batched.items()}
     n_atoms = batch["atom_mask"].shape[0]
     x_noisy = 16 * np.random.default_rng(0).standard_normal((n_atoms, 3), dtype=np.float32)
@@ -128,7 +124,7 @@ def test_openfold3():
             },
             use_zij_trunk_embedding=True,
         )
-        # Each token's representative atom index, read off as a "coordinate".
+        # Read each token's representative atom index back as a fake coordinate.
         index = torch.arange(n_atoms, dtype=torch.float32)[None, :, None].expand(1, n_atoms, 3)
         rep_index, rep_mask = get_token_representative_atoms(batched, index, batched["atom_mask"])
     s_inputs, s, z, denoised = s_inputs[0], s[0], z[0], denoised[0, 0]
@@ -149,7 +145,7 @@ def test_openfold3():
     features = openfold3_features.features(batch)
     assert bool(rep_mask.all())
     np.testing.assert_array_equal(features.rep_atom, rep_index[0, :, 0].long().numpy())
-    # Traceable: built inside `jit` from JAX arrays, the features are the same.
+    # Building the features inside `jit` from JAX arrays gives the same result.
     traced = eqx.filter_jit(openfold3_features.features)(
         {k: jnp.array(v.numpy()) for k, v in batch.items()}
     )
@@ -162,7 +158,7 @@ def test_openfold3():
         "z": rel_err(state.z, z),
     }
 
-    # Later stages from the reference trunk, so errors do not compound.
+    # Run the later stages from the reference trunk so errors do not compound.
     ref_state = TrunkState(s=jnp.array(s.numpy()), z=jnp.array(z.numpy()))
     ref_inputs = type(inputs)(
         s_inputs=jnp.array(s_inputs.numpy()), s_init=inputs.s_init, z_init=inputs.z_init

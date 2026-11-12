@@ -1,12 +1,5 @@
-"""ProMERA's features, as tinyprot's `AF3Featurizer`, `promera.inference.utils.finalize_feats`
-and `promera.data.utils.collate` produce them for proteins (see
-`docs/upstream-featurization/promera.md`): the dict `jfold.models.promera.features` takes,
-plus upstream's `frames_mask` and `msa_paired`, unbatched.
-
-The only random step upstream is the reference conformer: each residue's centred CCD ideal
-coordinates get a N(0, 1) translation, then a uniform random rotation, from numpy's global
-RNG. Here `key=None` gives the canonical (unposed) conformers, and a `jax.random` key draws
-the same distributions in the same order."""
+"""Featurize proteins for ProMERA as tinyprot's `AF3Featurizer` and ProMERA's inference
+utilities do. See `docs/upstream-featurization/promera.md`."""
 
 import io
 from collections import deque
@@ -22,13 +15,12 @@ from jfold.featurize.sites import AtomSites
 from jfold.featurize.sites import atom_sites as _atom_sites
 from jfold.featurize.system import THREE_LETTER, Chain, System
 
-# tinyprot's `_tokens`: <pad>, <gap>, the 20 amino acids by three-letter code, UNK, RNA, DNA,
-# <other>.
+# Token ids follow tinyprot's `_tokens`.
 NUM_TOKEN_TYPES = 34
 _AMINO_ACIDS = sorted(name for name in THREE_LETTER.values() if name != "UNK")
 TOKEN = {k: 2 + _AMINO_ACIDS.index(v) for k, v in THREE_LETTER.items() if k != "X"}
 TOKEN |= {"-": 1, "X": 22}
-# Letters an a3m row keeps (`_letter_to_std_letter`); any other aligned character is X.
+# Letters an a3m row keeps, as in `_letter_to_std_letter`. Other aligned characters become X.
 _MSA_LETTERS = frozenset(THREE_LETTER) | {"-"}
 MAX_PAIRS = 8192
 MAX_TOTAL = 16384
@@ -41,8 +33,7 @@ def residues() -> ResidueTable:
 
 @dataclass(frozen=True)
 class MSA:
-    """One chain's MSA as tinyprot holds it: `seqs` `[S, L]` letters, `dels` `[S, L]`
-    insertion counts, `taxs` `[S]` taxonomy ids (-1 for none)."""
+    """One chain's MSA as tinyprot stores it."""
 
     seqs: np.ndarray
     dels: np.ndarray
@@ -50,20 +41,12 @@ class MSA:
 
 
 def dummy_msa(sequence: str) -> MSA:
-    """A chain without an a3m: the query alone (`make_dummy_msa`)."""
     return MSA(np.array([list(sequence)]), np.zeros((1, len(sequence)), np.int64), np.array([-1]))
 
 
 def parse_msa(text: str, taxonomy: Callable[[str], int] | None = None) -> MSA:
-    """An a3m as `tinyprot.msa.MSA.from_a3m` reads it, line by line (a wrapped sequence is
-    several rows). A row whose ungapped, upper-cased text was already seen is dropped, so a
-    hit identical to the query goes. Lowercase letters are insertions, counted onto the
-    next column; trailing ones are dropped. Other characters outside the standard letters,
-    `X` and `-` become `X`.
-
-    A row's taxonomy is `taxonomy(id)` for a header whose first word is `>UniRef100...`
-    (`id` without the `>`), else -1. tinyprot looks it up in its taxonomy database; pass
-    that lookup here, since UniRef100 headers change the row order (see `pair_rows`)."""
+    """Parse an a3m as `tinyprot.msa.MSA.from_a3m` does, dropping duplicate rows. `taxonomy`
+    maps UniRef100 header ids to taxonomy ids, which change the row order."""
     seen, seqs, dels, taxs = set(), [], [], []
     tax = None
     for line in io.StringIO(text, newline=None).readlines():
@@ -104,12 +87,8 @@ def parse_msa(text: str, taxonomy: Callable[[str], int] | None = None) -> MSA:
 
 
 def pair_rows(msas: list[MSA]) -> tuple[np.ndarray, np.ndarray]:
-    """The MSA row layout, `tinyprot.msa.construct_paired_msa` with the "protenix" strategy:
-    `(pairing [S, C], is_paired [S, C])`, each row's MSA row index per chain (-1: absent).
-
-    Row 0 is every chain's query. Hits whose taxonomy (not -1) is shared by two or more
-    (chain, row) entries, even within one chain, come next (paired), by coverage and then
-    log rank. The remaining rows of each chain follow side by side, in order."""
+    """Lay out MSA rows as `construct_paired_msa` does with the "protenix" strategy,
+    returning each chain's row index per output row and the paired flags."""
     num_chains = len(msas)
     by_taxonomy: dict[int, list[tuple[int, int]]] = {}
     for c, msa in enumerate(msas):
@@ -165,8 +144,8 @@ def pair_rows(msas: list[MSA]) -> tuple[np.ndarray, np.ndarray]:
 
 
 def reference_conformers(system: System) -> tuple[np.ndarray, np.ndarray]:
-    """The canonical conformers of every residue in token order, `[N, 3]` float64 (centred
-    CCD ideal coordinates), and each atom's residue `[N]`."""
+    """Return the centred CCD conformer of every residue in token order and each atom's
+    residue index."""
     table = residues()
     letters = [c for chain in system.chains for c in chain.sequence]
     coords = [table[THREE_LETTER[c]].extra["ref_pos"] for c in letters]
@@ -175,9 +154,8 @@ def reference_conformers(system: System) -> tuple[np.ndarray, np.ndarray]:
 
 
 def random_pose(key: jax.Array, num_residues: int) -> tuple[np.ndarray, np.ndarray]:
-    """Per-residue translations `[R, 3]` ~ N(0, I) and uniform rotation matrices
-    `[R, 3, 3]`, as `tinyprot.ccd._get_conformer` draws them (`np.random.randn(3)`, then
-    scipy's `Rotation.random()`: a normalised N(0, I) quaternion, scalar last)."""
+    """Draw per-residue translations and uniform rotations in the order
+    `tinyprot.ccd._get_conformer` draws them."""
     k_translation, k_rotation = jax.random.split(key)
     translation = np.array(jax.random.normal(k_translation, (num_residues, 3)), np.float64)
     q = np.array(jax.random.normal(k_rotation, (num_residues, 4)), np.float64)
@@ -196,7 +174,7 @@ def random_pose(key: jax.Array, num_residues: int) -> tuple[np.ndarray, np.ndarr
 def pose(
     canonical: np.ndarray, uid: np.ndarray, translation: np.ndarray, rotation: np.ndarray
 ) -> np.ndarray:
-    """Each residue's conformer translated, then rotated: `(x + t) @ R.T`."""
+    """Translate then rotate each residue's conformer."""
     return np.einsum("aj,aij->ai", canonical + translation[uid], rotation[uid])
 
 
@@ -209,7 +187,7 @@ def _chain_msa(chain: Chain, taxonomy) -> MSA:
             f"chain {chain.id}: the a3m has {msa.seqs.shape[1]} columns, the chain "
             f"{len(chain.sequence)} residues"
         )
-    # Columns beyond the chain are dropped; the query row is not checked, as upstream.
+    # As upstream, columns beyond the chain are dropped and the query row is not checked.
     return MSA(msa.seqs[:, : len(chain.sequence)], msa.dels[:, : len(chain.sequence)], msa.taxs)
 
 
@@ -219,20 +197,18 @@ def features(
     key: jax.Array | None = None,
     taxonomy: Callable[[str], int] | None = None,
 ) -> dict[str, np.ndarray]:
-    """The feature dict for `system`. `key`: draws the per-residue reference-conformer pose;
-    None leaves the canonical conformers. `taxonomy`: UniRef100 id to taxonomy id, for a3ms
-    with UniRef100 headers (see `parse_msa`)."""
+    """Return ProMERA's feature dict, randomly moving the reference conformers if `key` is
+    given. `taxonomy` is needed for a3m files with UniRef100 headers."""
     system = system.without_templates("ProMERA")
     table = residues()
     chains = system.chains
 
-    # Tokens: one per residue, chains in input order, each chain its own entity.
+    # Each chain is its own entity, even when sequences repeat.
     letters = [c for chain in chains for c in chain.sequence]
     num_tokens = len(letters)
     asym_id = np.repeat(np.arange(len(chains)), [len(c.sequence) for c in chains])
     residue_index = np.concatenate([np.arange(1, len(c.sequence) + 1) for c in chains])
 
-    # Atoms: each residue's table entry, in token order.
     element, charge, hydrogens, names, rep_atom = [], [], [], [], []
     for letter in letters:
         name = THREE_LETTER[letter]
@@ -307,5 +283,5 @@ def features(
 
 
 def atom_sites(system: System) -> AtomSites:
-    """What each real atom of `features(system)` is (chains in input order)."""
+    """Describe each real atom of `features(system)`, with chains in input order."""
     return _atom_sites(system.chains, residues())

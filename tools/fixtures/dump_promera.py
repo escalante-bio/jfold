@@ -1,35 +1,9 @@
-"""Dump ProMERA's upstream feature dicts for the shared featurization fixtures.
+"""Write ProMERA's upstream features for the test systems to `tests/featurize/data/`.
 
-Run from ~/jfold:
+Each residue's random pose is saved too, so that `ref_pos` is
+`(aux_ref_pos_canonical + aux_ref_translation) @ aux_ref_rotation.T`.
 
     uv run python tools/fixtures/dump_promera.py
-
-For each system in `tests/featurize/data/systems.json` this featurizes as ProMERA's
-inference does (`promera.inference.cofolding.Cofolding.__getitem__`): tinyprot
-`Structure.from_schema`, MSAs from an `msa_dir` via `load_msa_from_dir`,
-`construct_paired_msa`, `AF3Featurizer(...).featurize(compute_frames=True)`,
-`promera.inference.utils.finalize_feats`, then `promera.data.utils.collate` on a batch of
-one. The saved dict is that batch without the batch axis, which
-`jfold.models.promera.features` takes. Output: `tests/featurize/data/promera_<system>.npz`.
-
-Precomputed MSAs go through ProMERA's own mechanism: a temporary `msa_dir` in which each
-chain's a3m is stored as `<sha256(sequence + "\\n")>.a3m`. Chains without an a3m miss the
-lookup and get tinyprot's single-row dummy MSA. The temporary directory keeps MSAs cached
-in `~/.cache/tinyprot/msa` out of the fixtures.
-
-Determinism: the only random step is the reference conformer (`tinyprot.ccd._get_conformer`):
-each residue's centred CCD ideal coordinates get a N(0, 1) translation and then a uniform
-random rotation, both from numpy's global RNG, which is seeded with `SEED` before each
-system. The script records each residue's draws and stores them next to the features:
-
-    aux_ref_pos_canonical  [A, 3]    float32  centred CCD ideal coordinates (no jitter/rotation),
-                                              padded like ref_pos
-    aux_ref_translation    [R, 3]    float64  per-residue translation t (indexed by ref_space_uid)
-    aux_ref_rotation       [R, 3, 3] float64  per-residue rotation matrix Rm
-
-with ref_pos = (aux_ref_pos_canonical + t) @ Rm.T for every atom of that residue (asserted
-below). String-valued keys (`ref_atom_name`, `residue_name`, `asym_id_`, `msa_chars`) are kept
-as numpy unicode arrays, unpadded, as tinyprot produces them; the model does not read them.
 """
 
 import json
@@ -54,9 +28,8 @@ def _ensure_tinyprot_data():
 
 
 class _ConformerRecorder:
-    """Wraps `tinyprot.ccd._get_conformer` (as imported into `tinyprot.feature`) without
-    changing its output or its consumption of numpy's global RNG, recording each call's
-    canonical coordinates, translation and rotation."""
+    """Wrap `tinyprot.ccd._get_conformer` to record each call's coordinates, translation and
+    rotation."""
 
     def __init__(self, original):
         self.original = original
@@ -70,7 +43,7 @@ class _ConformerRecorder:
         start = np.random.get_state()
         out = self.original(rname, leaving, center, jitter, randrot)
         end = np.random.get_state()
-        # Replay the same draws: translation first, then the rotation.
+        # Replay the same random draws, translation first and then rotation.
         np.random.set_state(start)
         t = np.random.randn(3) * jitter
         rot = Rotation.random().as_matrix()
@@ -118,7 +91,7 @@ def featurize(system: dict, name: str) -> dict:
 
     out = {}
     for key, value in batch.items():
-        if hasattr(value, "numpy"):  # a collated tensor: drop the batch axis
+        if hasattr(value, "numpy"):
             out[key] = value[0].numpy()
         elif isinstance(value[0], np.ndarray) and value[0].dtype.kind == "U":
             out[key] = value[0]
@@ -131,7 +104,6 @@ def featurize(system: dict, name: str) -> dict:
     out["aux_ref_translation"] = np.stack(recorder.translation)
     out["aux_ref_rotation"] = np.stack(recorder.rotation)
 
-    # ref_pos is the recorded rigid motion of the canonical conformer, per residue.
     uid = out["ref_space_uid"][:num_atoms]
     t, rot = out["aux_ref_translation"][uid], out["aux_ref_rotation"][uid]
     rebuilt = np.einsum("aj,aij->ai", canonical + t, rot)

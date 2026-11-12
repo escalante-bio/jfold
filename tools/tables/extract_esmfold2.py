@@ -1,10 +1,4 @@
-"""ESMFold2's residue table (`jfold/featurize/data/esmfold2.npz`) from ESMFold2's own CCD
-pickle (`biohub/ESMFold2`'s `ccd.pkl`, not Boltz's): for each standard residue and UNK, the
-heavy atoms in upstream's order (`PROTEIN_HEAVY_ATOMS`: N CA C O first, no OXT; UNK as N CA C
-O), their elements and formal charges, and the raw "Computed" conformer (else "Ideal", else
-conformer 0) after `RemoveHs(sanitize=False)`, with no centring. Checks every atom against
-upstream's own lookup (`get_idealized_atom_pos`, `_infer_element`, `CHARGED_ATOMS`). Needs
-the `esm` package, RDKit and the checkpoint in the Hugging Face cache; run once:
+"""Write `jfold/featurize/data/esmfold2.npz` from ESMFold2's own `ccd.pkl`. Run once:
 
     uv run python tools/tables/extract_esmfold2.py
 """
@@ -19,7 +13,7 @@ from rdkit import Chem
 ccd_path = os.environ.get("ESMCFOLD_CCD_PATH") or hf_hub_download(
     repo_id="biohub/ESMFold2", filename="ccd.pkl"
 )
-os.environ["ESMCFOLD_CCD_PATH"] = ccd_path  # upstream's lookup reads the same pickle
+os.environ["ESMCFOLD_CCD_PATH"] = ccd_path
 
 from esm.models.esmfold2 import conformers
 from esm.models.esmfold2.constants import (
@@ -60,8 +54,7 @@ for name in THREE_LETTER.values():
     elements = np.array([by_name[a].GetAtomicNum() for a in atoms], np.int64)
     charges = np.array([by_name[a].GetFormalCharge() for a in atoms], np.int64)
 
-    # Upstream's featurizer takes elements from the atom names and charges from a fixed
-    # table; both agree with the CCD for these residues.
+    # Check that upstream's element and charge lookups agree with the CCD.
     res_type = PROTEIN_RESIDUE_TO_RES_TYPE.get(name, PROTEIN_UNK_RES_TYPE)
     expected = [conformers.get_idealized_atom_pos(res_type, a) for a in atoms]
     assert np.array_equal(coords, np.stack(expected)), name

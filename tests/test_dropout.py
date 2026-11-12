@@ -1,6 +1,4 @@
-"""Dropout: each converted model's dropout shares its mask along the same axes as the
-upstream's own, at the upstream's rate; off by default, on with `eqx.nn.inference_mode`.
-Masks are random, so only their structure is compared."""
+"""Test that each converted model's dropout shares its mask along upstream's axes, at its rate."""
 
 import equinox as eqx
 import jax
@@ -18,7 +16,7 @@ ROWS = 64  # enough rows that a mask never keeps (or drops) all of them by chanc
 
 
 def constant_axes(x) -> tuple[int, ...]:
-    """The axes along which `x` does not vary."""
+    """Return the axes along which `x` does not vary."""
     x = np.asarray(x)
     return tuple(i for i in range(x.ndim) if np.all(x == np.take(x, [0], axis=i)))
 
@@ -90,9 +88,7 @@ def _openfold3_block():
     ids=["protenix", "openfold3", "boltz2"],
 )
 def test_pair_dropout_matches_upstream_structure(case, reference):
-    """Row and column dropout on the pair share their masks along the upstream's axes, at
-    its rate. (OpenFold-style blocks drop the ending-node update rowwise on the transposed
-    pair, so its column mask is the transposed row mask.)"""
+    """Check that pair row and column dropout share masks along upstream's axes, at its rate."""
     layer, rate = case()
     row, column = reference(rate)
     shape = (ROWS, ROWS, C)
@@ -102,7 +98,7 @@ def test_pair_dropout_matches_upstream_structure(case, reference):
 
 
 def test_msa_dropout_matches_upstream_structure():
-    """MSA dropout: OpenFold-style shares the mask across MSA rows; Boltz drops whole rows."""
+    """Check that OpenFold-style MSA dropout shares its mask across rows and Boltz drops rows."""
     import protenix.model.modules.pairformer as protenix_pairformer
     from boltz.model.modules.trunkv2 import MSALayer
 
@@ -151,8 +147,6 @@ def _boltz_stack():
 
 
 def test_inference_mode_reaches_scanned_layers():
-    """Turning dropout on reaches every layer of a scanned stack; outputs and gradients stay
-    finite, and a different key gives a different output."""
     stack = _boltz_stack()
     s, z = jnp.ones((T, 16)), jax.random.normal(jax.random.key(0), (T, T, C))
     mask = jnp.ones(T, bool)
@@ -167,8 +161,7 @@ def test_inference_mode_reaches_scanned_layers():
 
 
 def test_keys_are_optional_while_dropout_is_off():
-    """Without a key a stack runs as it does with any key while its dropout is off; once
-    dropout is on it refuses to run without one, so no mask is reused."""
+    """Check that a stack needs a key only while its dropout is on."""
     stack = _boltz_stack()
     s, z = jnp.ones((T, 16)), jax.random.normal(jax.random.key(0), (T, T, C))
     mask = jnp.ones(T, bool)
@@ -179,8 +172,7 @@ def test_keys_are_optional_while_dropout_is_off():
 
 
 def test_esmfold2_lm_dropout_is_on_at_inference():
-    """ESMFold2's dropout on the language model's pair is elementwise, as upstream's
-    `F.dropout(..., training=True)`, and on unless switched off."""
+    """Check that ESMFold2's language-model pair dropout is elementwise and enabled by default."""
     from jfold.convert.esmfold2 import lm_dropout
 
     d = lm_dropout(0.25)

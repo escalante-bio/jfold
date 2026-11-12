@@ -1,24 +1,9 @@
-"""Released models: converted from the upstream checkpoint once, then loaded from a
-`jfold.io` copy.
+"""Load released models, converting them from the upstream checkpoints when needed.
 
-`load(name)` loads a released model by name (`"boltz2"`, `"protenix_mini"`,
-`"esmfold2_experimental_fast"`, ...; `releases()` lists them). A structure model comes
-with its upstream sampler settings (`model.sampling`). On first use, the converted
-copy is downloaded from `HUB_REPO`; failing that, the upstream checkpoint is fetched, the
-upstream torch model built as the model's own inference builds it (`upstream(name)`, also
-the checkpoint tests' reference), converted, and saved with provenance metadata. Later
-loads read that copy and need neither torch nor the upstream package.
-
-Each model's recipe is a `Release` in the `RELEASES` of a `jfold.pretrained.recipes`
-module (`MODULES`).
-
-The cache is `$JFOLD_CACHE_DIR` (default `~/.cache/jfold`): `<cache>/<name>/` holds the
-upstream checkpoint (unless one is passed) and `<cache>/<name>/jfold/` the converted
-model.
-
-A part several models share (ESMFold2's ESMC) is a release of its own, stored once: a
-model's copy is saved without it (`Release.detach`) and completed from it on loading
-(`Release.assemble`). `upload` publishes a saved copy to `HUB_REPO`.
+`load(name)` downloads the converted model from `HUB_REPO`, or else builds the upstream torch
+model from its checkpoint, converts it and caches it in `$JFOLD_CACHE_DIR` (default
+`~/.cache/jfold`). `releases()` lists the names, and each model's recipe is a `Release` in
+`jfold.pretrained.recipes`.
 """
 
 import importlib
@@ -37,26 +22,23 @@ from jfold import io
 
 @dataclass(frozen=True)
 class Release:
-    """How to get one released model."""
+    """How to fetch, build and convert one released model.
 
-    upstream: str  # the upstream package
-    source: str  # where its checkpoint comes from
-    filename: str  # the checkpoint's file (or directory) name
-    fetch: Callable[[Path], None]  # download the checkpoint into a directory
-    build: Callable[[Path], Any]  # the upstream model, as its inference builds it
+    `assemble` and `detach` add and remove the components shared with other releases, and
+    `license` is saved as `LICENSE` next to the converted model."""
+
+    upstream: str
+    source: str
+    filename: str
+    fetch: Callable[[Path], None]
+    build: Callable[[Path], Any]
     convert: Callable[[Any], eqx.Module]
-    # After loading: completes the model from other releases (`assemble(model, load)`,
-    # `load(name)` loading one), e.g. ESMFold2's shared ESMC.
     assemble: Callable[[eqx.Module, Callable[[str], eqx.Module]], eqx.Module] | None = None
-    # Before saving: removes what `assemble` attaches, so it is stored only once.
     detach: Callable[[eqx.Module], eqx.Module] | None = None
-    # The licence notice the converted copy carries (`LICENSE` beside it), where the
-    # upstream licence requires one with redistributed copies.
     license: str | None = None
 
 
-# The `jfold.pretrained.recipes` modules whose `RELEASES` define the released models. They
-# import no upstream code until a model is built.
+# Recipe modules must not import upstream code until a model is built.
 MODULES = (
     "boltz2",
     "protenix",
@@ -68,10 +50,8 @@ MODULES = (
     "esmfold2",
     "atlasfold",
 )
-# The Hugging Face repository of converted models: `<name>/model.json` and
-# `<name>/weights.safetensors` for each.
 HUB_REPO = os.environ.get("JFOLD_HUB_REPO", "escalante-bio/jfold")
-RELEASES: dict[str, Release] = {}  # every module's, once `releases()` has imported them
+RELEASES: dict[str, Release] = {}  # Filled in by `releases()`.
 
 
 def cache_dir() -> Path:
@@ -79,7 +59,7 @@ def cache_dir() -> Path:
 
 
 def releases() -> dict[str, Release]:
-    """Every released model's recipe, by name."""
+    """Return every released model's recipe by name."""
     for module in MODULES:
         recipes = importlib.import_module(f"jfold.pretrained.recipes.{module}")
         for name, release in recipes.RELEASES.items():
@@ -96,8 +76,8 @@ def _release(name: str) -> Release:
 def checkpoint(
     name: str, path: str | Path | None = None, *, cache: str | Path | None = None
 ) -> Path:
-    """The upstream checkpoint: `path` if given, else `<cache>/<name>/<file>`; fetched
-    into its directory if missing."""
+    """Return the upstream checkpoint path, `<cache>/<name>/<filename>` by default, downloading
+    it if missing."""
     release = _release(name)
     root = Path(cache).expanduser() if cache is not None else cache_dir()
     path = Path(path).expanduser() if path is not None else root / name / release.filename
@@ -110,13 +90,11 @@ def checkpoint(
 def upstream(
     name: str, *, checkpoint_path: str | Path | None = None, cache: str | Path | None = None
 ):
-    """The upstream torch model, built as its own inference builds it."""
+    """Build the upstream torch model the same way its inference code does."""
     return _release(name).build(checkpoint(name, checkpoint_path, cache=cache))
 
 
 def _from_hub(name: str, converted: Path) -> bool:
-    """Download `name`'s converted copy from `HUB_REPO` into `converted`; False if the
-    repository doesn't have it (or can't be reached, with a warning)."""
     import shutil
 
     from huggingface_hub import snapshot_download
@@ -151,28 +129,25 @@ def load(
     refresh: bool = False,
     hub: bool = True,
 ) -> eqx.Module:
-    """The converted model `name`, from `<cache>/<name>/jfold/`. If that is missing, it is
-    downloaded from `HUB_REPO` (with `hub`), or else converted from the upstream checkpoint
-    (`checkpoint_path`, or the fetched one) and saved there; `refresh` reconverts. A cached
-    copy this jfold cannot read (saved by an older one) is downloaded again."""
+    """Load the converted model `name`, downloading it from `HUB_REPO` (if `hub`) or converting
+    it on first use, or again if `refresh`."""
     release = _release(name)
     root = Path(cache).expanduser() if cache is not None else cache_dir()
     converted = root / name / "jfold"
     missing = not (converted / "model.json").exists()
     if refresh or (missing and not (hub and _from_hub(name, converted))):
         path = checkpoint(name, checkpoint_path, cache=cache)
-        # Converted on the host: the copy is only saved, and `io.load` then moves the
-        # weights to the device in one transfer.
+        # Convert on the CPU, since `io.load` moves the saved weights to the device later.
         with jax.default_device(jax.devices("cpu")[0]):
             model = release.convert(release.build(path))
         metadata = io.provenance(
             name, checkpoint=path, source=release.source, upstream=release.upstream
         )
         save(name, model, metadata=metadata, cache=cache)
-        del model  # before loading the saved copy, so only one is ever in memory
+        del model  # Keep only one copy of the model in memory.
     try:
         model = io.load(converted)
-    except ValueError as error:  # a copy from an older jfold
+    except ValueError as error:
         if not (hub and _from_hub(name, converted)):
             raise
         warnings.warn(f"{converted}: {error}; replaced with {HUB_REPO}'s copy")
@@ -183,9 +158,8 @@ def load(
 
 
 def save(name: str, model: eqx.Module, *, metadata: dict, cache: str | Path | None = None) -> Path:
-    """Write `model` as `name`'s converted copy, `<cache>/<name>/jfold/`, without the parts
-    it shares with other releases (`Release.detach`), with its licence notice
-    (`Release.license`); returns the directory."""
+    """Save `model` to `<cache>/<name>/jfold/` without its shared components and with its
+    licence, and return the directory."""
     release = _release(name)
     root = Path(cache).expanduser() if cache is not None else cache_dir()
     converted = root / name / "jfold"
@@ -198,9 +172,7 @@ def save(name: str, model: eqx.Module, *, metadata: dict, cache: str | Path | No
 
 
 def upload(*names: str, cache: str | Path | None = None, message: str | None = None) -> None:
-    """Publish the saved copies of `names` (`<cache>/<name>/jfold/`, as `save` or `load`
-    wrote them, licence notice included) to `HUB_REPO` as `<name>/`, in one commit. Needs
-    write access."""
+    """Upload the saved models `names` to `HUB_REPO` in one commit."""
     from huggingface_hub import CommitOperationAdd, HfApi
 
     root = Path(cache).expanduser() if cache is not None else cache_dir()
@@ -208,7 +180,7 @@ def upload(*names: str, cache: str | Path | None = None, message: str | None = N
     for name in names:
         release = _release(name)
         converted = root / name / "jfold"
-        io.read_structure(converted)  # a copy this jfold reads
+        io.read_structure(converted)
         files = ["model.json", "weights.safetensors"]
         if release.license is not None:
             if (converted / "LICENSE").read_text() != release.license:

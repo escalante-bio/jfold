@@ -1,6 +1,4 @@
-"""End-to-end parity with the released Protenix checkpoints: the trunk, one denoising step,
-confidence and distogram on a small real complex. Downloads weights; run with
-`pytest -m checkpoint`."""
+"""Compare jfold with the released Protenix checkpoints on a small real complex."""
 
 from pathlib import Path
 
@@ -29,8 +27,7 @@ def _trunk(model, features):
 
 
 def _reference(name: str):
-    """The released model as `jfold.pretrained` builds it (as `protenix predict` does), from
-    where that command keeps its checkpoints (`~/.protenix` for the larger ones)."""
+    """Load the released model as `protenix predict` does."""
     from jfold import pretrained
     from jfold.pretrained.recipes.protenix import NAMES, configs
 
@@ -87,7 +84,7 @@ def test_protenix(name):
     assert rel_err(state.s, s) < 1e-3
     assert rel_err(state.z, z) < 1e-3
 
-    # Later stages from the reference trunk, so errors do not compound.
+    # Run the later stages from the reference trunk so errors do not compound.
     ref_state = TrunkState(s=jnp.array(s.numpy()), z=jnp.array(z.numpy()))
     ref_inputs = jax.tree.map(lambda x: x, inputs)
     context = model.diffusion.prepare(features, ref_inputs, ref_state)

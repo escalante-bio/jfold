@@ -9,9 +9,7 @@ from jfold.slots import Features
 
 
 def randomize(module: torch.nn.Module, seed: int) -> torch.nn.Module:
-    """Replace every trainable parameter with random values: upstream inits zero some output
-    projections, which would hide mismatches behind them. Frozen ones (bin edges, Fourier
-    features) keep their fixed values."""
+    """Replace every trainable parameter with random values."""
     gen = torch.Generator().manual_seed(seed)
     with torch.no_grad():
         for name, p in module.named_parameters():
@@ -26,7 +24,7 @@ def randomize(module: torch.nn.Module, seed: int) -> torch.nn.Module:
 
 
 def block_features(num_tokens: int, num_atoms: int, **fields) -> Features:
-    """`Features` for a test of one slot's module: `fields`, the rest empty placeholders."""
+    """Build `Features` for testing one module, with `fields` set and placeholders elsewhere."""
     empty = {
         "atoms": Atoms(
             features=jnp.zeros((num_atoms, 0)),
@@ -46,7 +44,7 @@ def block_features(num_tokens: int, num_atoms: int, **fields) -> Features:
 
 
 def rel_err(ours, ref) -> float:
-    """Max absolute error relative to the reference's largest magnitude."""
+    """Return the max absolute error relative to the reference's largest magnitude."""
     ours, ref = np.asarray(ours, np.float64), np.asarray(ref, np.float64)
     assert ours.shape == ref.shape, (ours.shape, ref.shape)
     return float(np.abs(ours - ref).max() / np.abs(ref).max())
@@ -74,8 +72,7 @@ def assert_finite(tree) -> None:
 
 
 def assert_round_trip(model, path=None):
-    """Save `model` with `jfold.io` (to `path`, or a temporary directory) and load it
-    back: the same structure, static fields and arrays. Returns the loaded model."""
+    """Save `model` with `jfold.io` and check that it loads back unchanged."""
     import tempfile
 
     import jax
@@ -100,7 +97,6 @@ STEPS = 20  # sampling steps for the schedule checks
 
 
 def assert_schedule(config, upstream) -> None:
-    """`config`'s noise levels for `STEPS` steps are the upstream sampler's own
-    `upstream` (fewer, after a cap)."""
+    """Check that `config`'s noise levels for `STEPS` steps equal `upstream`'s."""
     upstream = np.array([float(x) for x in upstream], np.float32)
     np.testing.assert_allclose(config.sigmas(STEPS), upstream, rtol=1e-5)

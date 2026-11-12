@@ -1,5 +1,4 @@
-"""`StructureModel`, the composition every jfold model is (its parts are slots typed by
-`jfold.slots`), and the AF3 recycling trunk (`Trunk`)."""
+"""The `StructureModel` that every jfold model is built as, and the AF3 recycling trunk."""
 
 import dataclasses
 
@@ -29,7 +28,7 @@ from jfold.slots import (
 
 
 class Recycle(eqx.Module):
-    """`init + linear(norm(previous))`."""
+    """Return `init + linear(norm(previous))`."""
 
     norm: LayerNorm
     linear: Linear
@@ -39,10 +38,7 @@ class Recycle(eqx.Module):
 
 
 class Trunk(AbstractTrunk[Features]):
-    """AF3 Algorithm 1's recycling loop, starting from zeros; one pass (lines 8-13)
-    recycles the previous single and pair, adds templates, runs the MSA module, then the
-    Pairformer. Boltz-2 and ProMERA add the MSA module's output to its input
-    (`ResidualMSA`). `key` may be None without dropout and MSA subsampling."""
+    """Run one pass of AF3's recycling trunk (Algorithm 1, lines 8-13)."""
 
     recycle_s: Recycle
     recycle_z: Recycle
@@ -78,27 +74,19 @@ class Trunk(AbstractTrunk[Features]):
 
 
 class StructureModel[F](eqx.Module):
-    """A structure model: each part is a slot, filled by a shared AF3 module (e.g. `Trunk`)
-    or the model's own (e.g. ESMFold2's Parcae trunk), all reading the same features `F`:
+    """A structure model whose parts are slots that all read the same features `F`:
 
         inputs, state = model.run_trunk(features, num_passes=4, key=k)
         coords = model.structure_sampler(features, inputs, state).sample(k)
         logits = model.confidence_logits(features, inputs, state, coords, key=k)
 
-    To drive the trunk passes yourself (where gradients stop, a state carried between
-    calls), call the trunk slot, as `run_trunk` does:
+    To run the trunk passes yourself, call the trunk slot the way `run_trunk` does:
 
         inputs = model.embed(features, key=k)
         state = model.trunk.init_state(inputs, key=k)
-        state = model.trunk(features, inputs, state, key=k)  # one pass; repeat at will
-        state = model.trunk.finish(features, state, key=k)  # the state the heads read
-
-    The other parts are called the same way: `model.diffusion.prepare(...)` and
-    `model.diffusion(context, x_noisy, t)` (what a sampler runs), `model.distogram(state.z)`.
-
-    Keys feed dropout (off by default) and the trunk's random draws (MSA subsampling,
-    ESMFold2's starting state and MSA column mask); where only dropout reads them they may
-    be None."""
+        state = model.trunk(features, inputs, state, key=k)  # one pass, repeat as needed
+        state = model.trunk.finish(features, state, key=k)
+    """
 
     input_embedder: AbstractInputEmbedder[F]
     trunk_init: AbstractTrunkInit[F]
@@ -106,17 +94,15 @@ class StructureModel[F](eqx.Module):
     diffusion: AbstractDiffusionModule[F]
     distogram: PairHead
     confidence: AbstractConfidenceModule[F] | None = None
-    # The upstream sampler's settings (`structure_sampler` uses them).
     sampling: UpstreamSampler | None = None
 
     def embed(self, features: F, *, key: PRNGKeyArray | None = None) -> TrunkInputs:
-        """What every trunk pass reads, computed once."""
+        """Compute the trunk inputs that every pass reads."""
         return self.trunk_init(features, self.input_embedder(features), key=key)
 
     def run_trunk(self, features: F, *, num_passes: int, key: PRNGKeyArray):
-        """The whole trunk: `embed`, the trunk's `init_state`, `num_passes` passes (3
-        recycles is 4 passes) and `finish`. Returns the trunk inputs and the state the heads
-        read. The passes run under `lax.scan`, so they compile once."""
+        """Run `embed`, `init_state`, `num_passes` trunk passes under `lax.scan`, and
+        `finish`, returning the trunk inputs and final state."""
         if num_passes < 1:
             raise ValueError(f"num_passes must be at least 1, got {num_passes}")
         k_embed, k_init, k_passes, k_finish = jax.random.split(key, 4)
@@ -139,10 +125,8 @@ class StructureModel[F](eqx.Module):
         schedule: Schedule | None = None,
         **changes,
     ) -> StructureSampler:
-        """A sampler for structures from this trunk output (`state` after `finish`): the
-        denoiser with its context computed once, and upstream's settings (`sampling`) for
-        `num_steps` steps on `schedule`, with `changes` to any of their fields (e.g.
-        `update=exponential_update`)."""
+        """Build a structure sampler from the finished trunk `state`, with keyword `changes`
+        overriding any upstream sampler setting."""
         context = self.diffusion.prepare(features, inputs, state)
         settings = self.sampling.settings(num_steps, schedule=schedule)
         return StructureSampler(
@@ -160,7 +144,7 @@ class StructureModel[F](eqx.Module):
         *,
         key: PRNGKeyArray | None = None,
     ) -> ConfidenceLogits:
-        """Confidence logits for the structure `coords`."""
+        """Return the confidence logits for the structure `coords`."""
         if self.confidence is None:
             raise NotImplementedError("this model has no confidence head")
         return self.confidence(features, inputs, state, coords, key=key)

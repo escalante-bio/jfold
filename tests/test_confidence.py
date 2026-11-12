@@ -1,4 +1,4 @@
-"""Confidence module and distogram head parity against each upstream."""
+"""Test the confidence module and distogram head against each upstream."""
 
 import dataclasses
 
@@ -60,7 +60,7 @@ def make_inputs(num_tokens, seed, c_s=C_S, c_z=C_Z, c_i=C_I) -> Inputs:
 
 
 def padded(x: Inputs, tokens: int) -> Inputs:
-    """`x` with `tokens` garbage tokens (and their atoms) appended."""
+    """Append `tokens` garbage tokens and their atoms to `x`."""
     g = make_inputs(
         x.num_tokens + tokens,
         seed=11,
@@ -168,7 +168,7 @@ def _openfold3():
             "zij_trunk": t(x.z_trunk)[None],
             "atom_positions_predicted": t(x.coords)[None, None],
         }
-        # Representative-atom selection is featurization: give it the test's atoms.
+        # Representative-atom selection belongs to featurization, so use the test's atoms.
         with mock.patch.object(
             head_modules,
             "get_token_representative_atoms",
@@ -230,7 +230,7 @@ def _promera():
             "plddt": out["plddt_logits"][0].cpu(),
         }
 
-    # ProMERA: pair width 32 (its triangle kernel), s_inputs 70 wider than the single.
+    # ProMERA's triangle kernel needs pair width 32, and its s_inputs is 70 wider than the single.
     return m, run, boltz.confidence_module, {"c_z": 32, "c_i": C_S + 70}
 
 
@@ -292,7 +292,7 @@ def _boltz2():
         }
 
     def pair_features(x: Inputs):
-        """Boltz-2's relative positions, bonds and contacts, from its own modules."""
+        """Build Boltz-2's relative positions, bonds and contacts with its own modules."""
         f = feats(x)
         with torch.no_grad():
             z = m.rel_pos(f) + m.token_bonds(f["token_bonds"]) + m.contact_conditioning(f)
@@ -334,8 +334,7 @@ def _arrays(x: Inputs) -> dict:
 @pytest.mark.parametrize("padding", [0, 2], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("case", CASES)
 def test_confidence_matches_reference(case, padding):
-    """Confidence logits match the upstream on the real tokens and atoms, with garbage
-    tokens appended; outputs and gradients stay finite."""
+    """Check that confidence logits match the upstream on the real tokens with garbage appended."""
     module, run_reference, convert, *extra = CASES[case]()
     widths = extra[0] if extra else {}
     pair_features_fn = extra[1] if len(extra) > 1 else None

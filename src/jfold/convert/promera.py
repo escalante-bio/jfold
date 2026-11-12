@@ -1,5 +1,4 @@
-"""A whole ProMERA model (`promera.model.model.PromeraModel`), from the Boltz-lineage block
-converters in `jfold.convert.boltz`."""
+"""Convert a whole ProMERA model using the block converters in `jfold.convert.boltz`."""
 
 import dataclasses
 
@@ -14,8 +13,8 @@ from jfold.sampling import UpstreamSampler, masked_centering, rigid_align_stop_g
 
 
 def input_embedder(m) -> PromeraInputEmbedder | InputEmbedder:
-    """ProMERA's `InputEmbedder`; the released one's atom encoder has no transformer
-    layers (`atom_encoder_depth: 0`)."""
+    """Convert ProMERA's `InputEmbedder`, whose released atom encoder has no transformer
+    layers."""
     encoder = m.atom_attention_encoder
     if encoder.atom_encoder_depth > 0:
         return boltz.input_embedder(m)
@@ -28,9 +27,7 @@ def input_embedder(m) -> PromeraInputEmbedder | InputEmbedder:
 
 
 def structure_model(m) -> StructureModel:
-    """A whole ProMERA model: its trunk, diffusion module, distogram and the confidence
-    module run on sampled structures (`sm_confidence_module`). Inputs come from
-    `jfold.models.promera.features`."""
+    """Convert a whole ProMERA model, using its `sm_confidence_module` for confidence."""
     cfg = m.cfg.model
     relative_positions = boltz.relative_positions(m.rel_pos)
     return StructureModel(
@@ -52,7 +49,7 @@ def structure_model(m) -> StructureModel:
                 )
             ),
         ),
-        # The diffusion module reads the trunk's relative position embedding.
+        # The diffusion module reuses the trunk's relative position embedding.
         diffusion=dataclasses.replace(
             boltz.diffusion_module(m.structure_module.score_model),
             relative_positions=relative_positions,
@@ -64,10 +61,8 @@ def structure_model(m) -> StructureModel:
 
 
 def sampling(config: dict | None = None) -> UpstreamSampler:
-    """ProMERA's inference sampler, from its `diffusion` settings (the packaged
-    `promera/inference/cofolding.yaml` by default): churn noise added before the frame
-    is re-centred and augmented, the noisy sample aligned onto the denoised one, ending
-    at `sigma_data * s_min`."""
+    """Return ProMERA's inference sampler settings from `config`, by default the packaged
+    `promera/inference/cofolding.yaml`."""
     if config is None:
         import importlib.resources
 

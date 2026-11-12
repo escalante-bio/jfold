@@ -1,8 +1,5 @@
-"""The MSA module (AF3 Algorithms 8-10): MSA rows exchange information with the pair through
-outer product means and pair-weighted averaging, between pair-only Pairformer layers.
-
-Inputs are unbatched: MSA `[S, T, Cm]` with a mask `[S, T]`, pair `[T, T, Cz]` and a token
-mask `[T]`; masks are False for padding."""
+"""The MSA module of AF3 Algorithms 8-10, on an unbatched MSA `[S, T, Cm]` and pair
+`[T, T, Cz]` with masks False for padding."""
 
 import abc
 
@@ -17,8 +14,8 @@ from jfold.nn import Dropout, LayerNorm, Linear, Transition, scan_layers, split_
 
 
 class PairWeightedAveraging(eqx.Module):
-    """AF3 Algorithm 10: each MSA row averages over tokens with per-head weights from the
-    pair, gated by the row."""
+    """AF3 Algorithm 10, where each MSA row averages over tokens with per-head weights
+    from the pair, gated by the row."""
 
     norm_m: LayerNorm
     linear_v: Linear  # Cm -> heads * C
@@ -41,7 +38,7 @@ class PairWeightedAveraging(eqx.Module):
 
 
 def outer_product_sum(norm, linear_a, linear_b, m, msa_mask):
-    """The sum over real MSA rows of `a_si ⊗ b_sj`, flattened, and the number of rows in it."""
+    """Return the flattened sum of `a_si ⊗ b_sj` over real MSA rows, and the row counts."""
     m = norm(m)
     mask = msa_mask[..., None].astype(m.dtype)
     a, b = linear_a(m) * mask, linear_b(m) * mask
@@ -51,8 +48,8 @@ def outer_product_sum(norm, linear_a, linear_b, m, msa_mask):
 
 
 class OuterProductMean(eqx.Module):
-    """AF3 Algorithm 9: the mean over MSA rows of outer products, projected to the pair
-    (the Boltz lineage)."""
+    """AF3 Algorithm 9 as in Boltz, projecting the mean of outer products over MSA rows
+    to the pair."""
 
     norm: LayerNorm
     linear_a: Linear
@@ -67,9 +64,8 @@ class OuterProductMean(eqx.Module):
 
 
 class ProjectedOuterProductMean(eqx.Module):
-    """OpenFold's outer product mean (Protenix, OpenDDE, Mol-1, OpenFold3): the summed outer
-    products are projected first, and the result, bias included, divided by the row count
-    plus `eps`."""
+    """OpenFold's outer product mean, which projects the summed outer products and then
+    divides by the row count plus `eps`."""
 
     norm: LayerNorm
     linear_a: Linear
@@ -85,8 +81,7 @@ class ProjectedOuterProductMean(eqx.Module):
 
 
 class MSAUpdate(eqx.Module):
-    """The MSA's own update in a block: pair-weighted averaging (with dropout), then a
-    transition."""
+    """Update the MSA with pair-weighted averaging and dropout, followed by a transition."""
 
     pair_weighted_averaging: PairWeightedAveraging
     transition: Transition
@@ -105,13 +100,11 @@ class MSAUpdate(eqx.Module):
 
 
 class MSALayer(eqx.Module):
-    """One block of AF3 Algorithm 8. AF3 updates the pair from the MSA first
-    (`outer_product_first`); the Boltz lineage updates the MSA first. Without `msa` (a last
-    block, whose MSA nothing reads) the MSA passes through."""
+    """One block of AF3 Algorithm 8, which returns the MSA unchanged if `msa` is None."""
 
     outer_product_mean: OuterProductMean | ProjectedOuterProductMean
     msa: MSAUpdate | None
-    pair: PairformerLayer | PairMixerLayer  # without a single track
+    pair: PairformerLayer | PairMixerLayer  # with no single track
     outer_product_first: bool = eqx.field(static=True)
 
     def __call__(
@@ -134,14 +127,14 @@ class MSALayer(eqx.Module):
         return m, z
 
 
-DEFAULT_MAX_ROWS = 1024  # ESMFold2's, Boltz-2's, OpenFold3's and ProMERA's per-pass draw
+DEFAULT_MAX_ROWS = 1024  # rows drawn per pass by ESMFold2, Boltz-2, OpenFold3 and ProMERA
 
 
 def subsample_rows(
     msa_mask: Bool[Array, "S T"], num: int, key: PRNGKeyArray, *, keep_query: bool = True
 ) -> Int[Array, " num"]:
-    """`num` rows drawn uniformly without replacement, real rows before padding. With
-    `keep_query`, row 0 (the query) and `num - 1` others."""
+    """Draw `num` row indices uniformly without replacement, real rows first, always
+    including row 0 if `keep_query`."""
     real = msa_mask.any(axis=-1)
     if not keep_query:
         scores = jax.random.gumbel(key, real.shape) - jnp.where(real, 0.0, jnp.inf)
@@ -151,8 +144,7 @@ def subsample_rows(
 
 
 class AbstractMSAModule(eqx.Module):
-    """A trunk's MSA module: the pair updated from the MSA (`MSAModule`, or `ResidualMSA`
-    around one)."""
+    """A trunk's MSA module, which updates the pair from the MSA."""
 
     @abc.abstractmethod
     def __call__(
@@ -165,25 +157,13 @@ class AbstractMSAModule(eqx.Module):
         *,
         key: PRNGKeyArray | None = None,
     ) -> tuple[Float[Array, "S T Cm"], Float[Array, "T T Cz"]]:
-        """The final MSA and the pair."""
+        """Return the final MSA and the updated pair."""
 
 
 class MSAModule(AbstractMSAModule):
-    """AF3 Algorithm 8: embed the MSA (the model's MSA feature vector, from
-    `jfold.models.*.msa_features`, plus `s_inputs`), then update the pair through stacked
-    `MSALayer`s and, when the last block differs (no MSA update), a final one.
-
-    Each call (each trunk pass) draws afresh the MSA rows its upstream reads (`draw_rows`);
-    a draw needs a `key`:
-
-    - At most `max_rows` rows (`None`: every row), uniformly without replacement from the
-      real rows. With `keep_query` (ESMFold2) the query is always among them; Boltz-2,
-      ProMERA, OpenFold3 and OpenDDE draw it like any other row.
-    - With `min_rows` (Protenix, Mol-1), a uniformly random number of those: from `min_rows`
-      (every real row, if fewer) to every real row. The rows past that number are masked, so
-      a pass computes on the whole draw.
-
-    Row order does not change the pair."""
+    """The MSA module of AF3 Algorithm 8, which draws at most `max_rows` real rows each
+    pass, or all if None, keeping the query if `keep_query`. With `min_rows`, it masks
+    out all but a uniformly random number of them, at least `min_rows`."""
 
     linear_msa: Linear  # MSA feature vector -> Cm
     linear_s: Linear  # s_inputs -> Cm
@@ -196,8 +176,7 @@ class MSAModule(AbstractMSAModule):
     def draw_rows(
         self, msa_mask: Bool[Array, "S T"], key: PRNGKeyArray | None
     ) -> tuple[Int[Array, " R"], Bool[Array, "R T"]] | None:
-        """The rows a pass reads and their mask (rows past a random depth masked out), or
-        None when it reads every row."""
+        """Return the drawn row indices and their mask, or None if every row is used."""
         num_rows = msa_mask.shape[0]
         num = num_rows if self.max_rows is None else min(num_rows, self.max_rows)
         random_depth = self.min_rows is not None and num_rows > self.min_rows
@@ -224,7 +203,6 @@ class MSAModule(AbstractMSAModule):
         *,
         key: PRNGKeyArray | None = None,
     ) -> tuple[Float[Array, "S T Cm"], Float[Array, "T T Cz"]]:
-        """The final MSA (before the last block's skipped update, if any) and the pair."""
         k_rows, k_layers, k_last = split_key(key, 3)
         draw = self.draw_rows(msa_mask, k_rows)
         if draw is not None:
@@ -243,8 +221,7 @@ class MSAModule(AbstractMSAModule):
 
 
 class ResidualMSA(AbstractMSAModule):
-    """The MSA module as Boltz-2's and ProMERA's trunks apply it: `z + msa(z)`, where the
-    module's output pair already includes its input, so the incoming pair counts twice."""
+    """Return `z + msa(z)` as Boltz-2 and ProMERA do, counting the incoming pair twice."""
 
     module: MSAModule
 

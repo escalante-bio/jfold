@@ -1,9 +1,5 @@
-"""The template embedder (AF3 Algorithm 16): each template's pair features, with the trunk
-pair, through a pair-only Pairformer stack, averaged over the templates.
-
-Inputs are unbatched: template features `[N, T, T, F]` (the model's, from
-`jfold.models.*.template_features`), a template mask `[N]` and a token mask `[T]`; masks are
-False for padding."""
+"""The template embedder of AF3 Algorithm 16, which runs each template with the trunk
+pair through a pair-only Pairformer stack and averages the results."""
 
 import equinox as eqx
 import jax
@@ -15,15 +11,13 @@ from jfold.nn import LayerNorm, Linear
 
 
 class TemplateEmbedder(eqx.Module):
-    """AF3 Algorithm 16."""
-
     norm_z: LayerNorm
     linear_z: Linear  # Cz -> Ct
     linear_features: Linear  # template feature vector -> Ct
-    stack: PairformerStack  # pair-only layers
+    stack: PairformerStack  # layers with no single track
     norm_v: LayerNorm
     linear_u: Linear  # Ct -> Cz
-    # Boltz-2 adds each template's input back to its stack's (already residual) output.
+    # Boltz-2 adds each template's stack input to its already residual output.
     add_stack_input: bool = eqx.field(static=True, default=False)
 
     def __call__(
@@ -47,6 +41,6 @@ class TemplateEmbedder(eqx.Module):
         v = jax.vmap(one_template)(template_features, keys)
         weights = template_mask.astype(v.dtype)[:, None, None, None]
         u = (v * weights).sum(0) / jnp.maximum(template_mask.sum(), 1)
-        # Kept out of `linear_u`'s matmul: when the mask is a constant, XLA's GPU Triton
-        # GEMM fusion (JAX 0.12) folds the average into the matmul and computes it wrong.
+        # The barrier keeps the average out of `linear_u`'s matmul. With a constant mask,
+        # XLA's GPU Triton GEMM fusion (JAX 0.12) folds them together and gets it wrong.
         return self.linear_u(jax.lax.optimization_barrier(jax.nn.relu(u)))

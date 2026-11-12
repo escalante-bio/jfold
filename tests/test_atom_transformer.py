@@ -1,4 +1,4 @@
-"""Atom transformer (windowed diffusion transformer) parity against each upstream."""
+"""Test the atom transformer (a windowed diffusion transformer) against each upstream."""
 
 import functools
 
@@ -19,7 +19,7 @@ W, H = 32, 128
 
 
 def windowed_pair(pair, windows, atom_mask):
-    """A dense atom pair `[N, N, C]` in `windows`' layout `[NW, W, H, C]`."""
+    """Gather a dense atom pair `[N, N, C]` into `windows`' layout `[NW, W, H, C]`."""
     n = pair.shape[0]
     index, _ = windows.key_index(atom_mask)
     rows = np.minimum(np.arange(windows.num_blocks(n) * W).reshape(-1, W), n - 1)
@@ -28,7 +28,7 @@ def windowed_pair(pair, windows, atom_mask):
 
 def _boltz_lineage(m, keys_module, proj_in_layers):
     def run(q, c, p, atom_mask):
-        # Boltz needs a whole number of query blocks: pad, and mask the padding.
+        # Boltz needs a whole number of query blocks, so pad and mask the padding.
         n = -(-q.shape[1] // W) * W
         q, c = (torch.nn.functional.pad(x, (0, 0, 0, n - x.shape[1])) for x in (q, c))
         atom_mask = torch.nn.functional.pad(atom_mask, (0, n - atom_mask.shape[1]))
@@ -152,7 +152,7 @@ def _forward(model, q, c, p, atom_mask):
 
 @eqx.filter_jit
 def _input_grads(model, q, c, p, atom_mask, num_real):
-    """Gradients of the real atoms' outputs with respect to every input."""
+    """Return the gradients of the real atoms' outputs with respect to every input."""
 
     def loss(q, c, p):
         return _forward(model, q, c, p, atom_mask)[:num_real].sum()
@@ -163,8 +163,7 @@ def _input_grads(model, q, c, p, atom_mask, num_real):
 @pytest.mark.parametrize("padding", [0, 40], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("case", CASES)
 def test_atom_transformer_matches_reference(case, padding):
-    """jfold on atoms with `padding` masked garbage atoms appended (here, a whole extra
-    query block) matches the upstream on the real atoms; outputs and gradients stay finite."""
+    """Check that jfold matches the upstream on the real atoms with garbage atoms appended."""
     module, run_reference, convert, reference_layout = CASES[case]()
     randomize(module, seed=0)
     model = convert(module)
@@ -176,7 +175,7 @@ def test_atom_transformer_matches_reference(case, padding):
     c = rng.standard_normal((NUM_ATOMS, C_A), dtype=np.float32)
     pair = rng.standard_normal((NUM_ATOMS, NUM_ATOMS, C_P), dtype=np.float32)
 
-    # The reference, on the real atoms (Boltz pads to whole query blocks itself).
+    # Run the reference on the real atoms only. Boltz pads to whole query blocks itself.
     real = np.ones(NUM_ATOMS, bool)
     if reference_layout == "padded-to-block":
         n = -(-NUM_ATOMS // W) * W

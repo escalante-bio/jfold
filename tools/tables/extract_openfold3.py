@@ -1,14 +1,7 @@
-"""OpenFold3's residue table (`jfold/featurize/data/openfold3.npz`): each residue's atoms,
-elements, formal charges and 32 reference conformers, built with OpenFold3's own (vendored)
-code as `structure_with_ref_mols_from_sequence` builds each residue: the CCD residue from
-biotite without hydrogens, OXT included, converted to RDKit and embedded with ETKDGv3
-(hydrogens added, then removed); OXT is then dropped. X is CCD `UNK` (6 atoms).
+"""Write `jfold/featurize/data/openfold3.npz` with OpenFold3's vendored code.
 
-Upstream draws each conformer's ETKDG seed from Python's global `random`; conformer `s` here
-is the one upstream produces with `random.seed(s)`, for s = 0..31, so the table is
-reproducible (for a given RDKit build). Conformers are stored centred on their atoms (OXT
-excluded), as upstream centres them before its random pose. Needs rdkit and biotite (the
-`jopenfold3` environment); run once:
+Conformer `s` is the one upstream embeds after `random.seed(s)`, so the table is
+reproducible for a given RDKit build. Run once:
 
     uv run python tools/tables/extract_openfold3.py
 """
@@ -36,8 +29,8 @@ RDLogger.DisableLog("rdApp.*")
 
 
 def conformer(atom_array, seed: int):
-    """Upstream's reference molecule for one residue with `random` seeded by `seed`: the
-    RDKit mol (with conformer 0) and the mask of kept (non-leaving) atoms."""
+    """Return upstream's reference molecule for one residue after `random.seed(seed)`, and its
+    kept-atom mask."""
     random.seed(seed)
     ref = processed_reference_molecule_from_atom_array(atom_array, atoms_to_mask=LEAVING)
     return ref.mol, np.asarray(ref.in_crop_mask, bool)

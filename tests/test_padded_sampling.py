@@ -1,6 +1,4 @@
-"""Sampling a structure end to end with padded inputs: embed, trunk, denoiser context
-and the sampler give the real atoms the same coordinates as without padding, given the
-same random draws for the real tokens and atoms."""
+"""Test that padding does not change a structure sampled end to end."""
 
 import equinox as eqx
 import jax
@@ -21,7 +19,7 @@ NUM_STEPS = 8
 
 @eqx.filter_jit
 def _sample(model, features, z, noise):
-    key = jax.random.key(5)  # dropout is off: the trunk's key is unused
+    key = jax.random.key(5)  # dropout is off, so the trunk's key is unused
     inputs = model.embed(features, key=key)
     state = TrunkState(s=inputs.s_init, z=z)
     for _ in range(2):
@@ -33,8 +31,7 @@ def _sample(model, features, z, noise):
 
 @pytest.mark.parametrize("experimental", [False, True], ids=["release", "experimental"])
 def test_padding_leaves_the_sample_unchanged(experimental):
-    """ESMFold2 samples the same real-atom coordinates with padded tokens, atoms and MSA
-    rows, from the same initial state and sampler noise on the real ones."""
+    """Check that ESMFold2 samples the same real-atom coordinates with padding."""
     m = _small_model(True, experimental=experimental)
     f = _system(torch.Generator().manual_seed(1), True)
     model = (convert.esmfold2_experimental if experimental else convert.esmfold2)(m)

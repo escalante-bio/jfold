@@ -1,25 +1,6 @@
-"""Dump BioEmu2's upstream feature dicts for the shared featurizer test systems.
-
-Run from the jfold root:
+"""Write BioEmu2's upstream features for the test systems to `tests/featurize/data/`.
 
     uv run python tools/fixtures/dump_bioemu2.py
-
-For every system in `tests/featurize/data/systems.json` this builds the upstream inputs as
-`tests/test_bioemu2.py` does (`System` of `Protein` entities, an `MSA` of raw unpaired A3M
-text, `prepare_structure`, `batch_collate`, `convert_densebatch_to_dictionary`) in
-"structure" mode, drops the batch dimension, and writes
-`tests/featurize/data/bioemu2_<system>.npz`: the dict `jfold.models.bioemu2.features` takes,
-every value a numpy array.
-
-Chains with an `"msa"` entry use that A3M file (what `bioemu2.load_a3m_msa` reads); the
-others get a single-sequence A3M (`>query\\n<sequence>\\n`). No paired A3M is passed,
-except for `bioemu2_<system>_paired_queries.npz`: the heteromers `dimer` and `dimer_msa`
-(`dimer` with chain A's MSA) with each chain's query as its paired A3M, as mosaic passes
-them.
-
-Nothing is random: protein reference conformers come from the packaged CCD templates
-(`bioemu2/assets/polymer_templates.pt`) without any rotation, and the MSA is used in file
-order. No network access is needed.
 """
 
 import json
@@ -39,8 +20,8 @@ MODE = "structure"
 def upstream_features(
     chains: list[dict], mode: str = MODE, paired_queries: bool = False
 ) -> dict[str, np.ndarray]:
-    """The unbatched upstream feature dict for a list of `{"id", "sequence", "msa"?}` chains;
-    with `paired_queries`, each chain's query is its paired A3M."""
+    """Return upstream's unbatched features for `chains`, passing each query as its paired A3M if
+    `paired_queries`."""
     system = System(
         entities=[Protein(sequence=chain["sequence"], asym_ids=[chain["id"]]) for chain in chains]
     )
@@ -63,7 +44,7 @@ def upstream_features(
 
 
 def paired_query_systems(systems: dict) -> dict:
-    """The heteromers dumped with each chain's query as its paired A3M."""
+    """Return the heteromers to save with each chain's query as its paired A3M."""
     dimer = systems["dimer"]["chains"]
     return {"dimer": dimer, "dimer_msa": [dimer[0] | {"msa": "chain_A.a3m"}, dimer[1]]}
 

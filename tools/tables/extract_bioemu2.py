@@ -1,7 +1,4 @@
-"""BioEmu2's residue table (`jfold/featurize/data/bioemu2.npz`) from its packaged polymer
-templates: CCD heavy atoms with ideal coordinates centred on all heavy atoms (OXT
-included), then OXT dropped, as `_templates_from_protein_sequence` does. X uses the
-`UNK_PROT` template (ALA's). Needs the `bioemu2` package; run once:
+"""Write `jfold/featurize/data/bioemu2.npz` from BioEmu2's packaged polymer templates. Run once:
 
     uv run python tools/tables/extract_bioemu2.py
 """

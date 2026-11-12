@@ -1,18 +1,7 @@
-"""OpenFold3's features, as its inference featurization produces them for proteins (see
-`docs/upstream-featurization/openfold3.md`): the unbatched dict
-`jfold.models.openfold3.features` takes, plus upstream's `num_atoms_per_token`. Upstream's
-quirks are reproduced: ids ranked by string sort, the query row twice, `.` as an aligned
-`X`, the (8/pi)-scaled deletion value and the scrambled profile.
-
-Reference conformers come from a stored table (`jfold/featurize/data/openfold3.npz`): 32
-ETKDGv3 conformers per residue, made with upstream's procedure, where upstream embeds a
-fresh one per residue. With a `key`, each residue draws one of them and upstream's random
-pose (a uniformly random rotation from a normalized Gaussian quaternion, then a unit
-Gaussian translation); with `key=None`, every residue takes conformer 0, centred and
-unposed. Everything else is deterministic.
-
-Templates (`Chain.template`) are aligned to their chain with Kalign, as upstream realigns a
-template named without a residue-wise alignment."""
+"""Featurize proteins for OpenFold3 as its inference featurization does. Upstream quirks are
+reproduced on purpose: string-sorted ids, a doubled query row, `.` as `X`, an 8/pi deletion
+scale and a mis-indexed profile. Reference conformers come from a stored table of 32 ETKDGv3
+conformers per residue, since upstream generates a fresh one each time."""
 
 import warnings
 
@@ -27,15 +16,14 @@ from jfold.featurize.sites import AtomSites
 from jfold.featurize.sites import atom_sites as _atom_sites
 from jfold.featurize.system import AMINO_ACIDS, THREE_LETTER, System, Template
 
-# STANDARD_RESIDUES_WITH_GAP: the 20 amino acids (AlphaFold order), UNK, RNA, DNA, GAP.
+# Classes follow upstream's STANDARD_RESIDUES_WITH_GAP.
 NUM_CLASSES = 32
 UNK, GAP = 20, 31
 TOKEN = {a: i for i, a in enumerate(AMINO_ACIDS)} | {"X": UNK}
 NUM_ELEMENTS = 119
 NUM_TEMPLATES = 4
 DISTOGRAM_BINS = 39
-# Squared distogram bin edges (`TemplateDistogramSettings`: 3.25 to 50.75 A), the last bin
-# open-ended (upstream's 1e8).
+# Squared bin edges from `TemplateDistogramSettings`, with the last bin closed at 1e8.
 DISTOGRAM_LOWER = np.linspace(3.25, 50.75, DISTOGRAM_BINS) ** 2
 DISTOGRAM_UPPER = np.append(DISTOGRAM_LOWER[1:], 1e8)
 MIN_TEMPLATE_TOKENS = 5
@@ -48,21 +36,17 @@ def residues() -> ResidueTable:
 
 
 def _rank(values: list[str]) -> dict[str, int]:
-    """1-based rank of each distinct string in lexicographic order."""
     return {v: i + 1 for i, v in enumerate(sorted(set(values)))}
 
 
 def _classes(rows) -> np.ndarray:
-    """`map_str_array_to_idx_array`: amino acids and X to 0-20, `-` to GAP, anything else
-    (`.`, `*`, B, Z, ...) to UNK."""
     return np.array(
         [[GAP if c == "-" else TOKEN.get(c, UNK) for c in row] for row in rows], np.int64
     ).reshape(len(rows), -1)
 
 
 def _profile(classes: np.ndarray) -> np.ndarray:
-    """`calculate_profile`, with its index mixup: per chunk of columns, column j's counts are
-    those of a run of R consecutive entries of the chunk's row-major flattening."""
+    """Compute the profile with `calculate_profile`'s indexing bug."""
     n_rows, n_cols = classes.shape
     counts = np.zeros((n_cols, NUM_CLASSES), np.int64)
     for start in range(0, n_cols, PROFILE_CHUNK):
@@ -76,9 +60,6 @@ def _profile(classes: np.ndarray) -> np.ndarray:
 
 
 def _chain_msa(chain):
-    """A chain's MSA rows (query row, then the whole main MSA, so the query twice) as classes
-    and deletion counts over its residues, with the main MSA's profile and deletion mean.
-    A chain without an MSA gets upstream's dummy alignment: the sequence alone."""
     length = len(chain.sequence)
     if chain.msa is None:
         rows, deletions = [chain.sequence], np.zeros((1, length), np.int64)
@@ -97,9 +78,6 @@ def _chain_msa(chain):
 
 
 def _pose(table: ResidueTable, types: list[str], key) -> np.ndarray:
-    """Each residue's reference conformer, in token order, `[N_atom, 3]`: with `key`, a
-    random table conformer under upstream's random rotation and translation; else
-    conformer 0 as stored (centred)."""
     names = sorted(set(types))
     width = max(len(table[n].atoms) for n in names)
     num_conformers = table[names[0]].conformers.shape[0]
@@ -136,11 +114,8 @@ def _pose(table: ResidueTable, types: list[str], key) -> np.ndarray:
 
 
 def template_alignment(query: str, template: str) -> np.ndarray | None:
-    """Each query residue's template residue (0-based), as upstream realigns a template to
-    its chain (`A3mParser(realign=True)`): Kalign's default mode on the query, the query
-    again and the template sequence. None when a query residue faces a gap, for which
-    upstream drops the template (`map_token_pos_to_template_residues`). A template with the
-    query's own sequence aligns to itself without Kalign."""
+    """Return the template residue aligned to each query residue by Kalign, or None if any
+    query residue is unaligned, since upstream then drops the template."""
     if template == query:
         return np.arange(len(query))
     query_row, _, template_row = kalign.align([query, query, template])
@@ -155,9 +130,6 @@ def template_alignment(query: str, template: str) -> np.ndarray | None:
 
 
 def _template_atoms(template: Template, residues: np.ndarray):
-    """The template residues `residues` as upstream reads them: residue class, pseudo-beta
-    atom (CB, CA for glycine) and N, CA, C, NaN where missing (unresolved residues have no
-    atoms)."""
     nan = np.full(3, np.nan)
     restype = [TOKEN[template.sequence[t]] for t in residues]
     pseudo_beta, frame = [], []
@@ -173,7 +145,6 @@ def _dot(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def _normalized(v: np.ndarray) -> np.ndarray:
-    """`Vec3Array.normalized`: `v / sqrt(max(|v|^2, 1e-12))`."""
     return v / np.sqrt(np.maximum(_dot(v, v), np.float32(1e-12)))[..., None]
 
 
@@ -185,10 +156,8 @@ def _cross(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def unit_vectors(frame: np.ndarray) -> np.ndarray:
-    """`[T, T, 3]` float32: the direction of token j's CA in token i's backbone frame, as
-    `create_template_unit_vector` computes it (missing atoms at the origin): the frame's
-    axes are C-CA normalized, the part of N-CA orthogonal to it, normalized, and their
-    cross product; the point is `R_i^T t_j + R_i^T (-t_i)`, then normalized."""
+    """Return the direction of token j's CA in token i's backbone frame, as
+    `create_template_unit_vector` computes it."""
     n, ca, c = np.moveaxis(np.nan_to_num(frame).astype(np.float32), -2, 0)
     e0 = _normalized(c - ca)
     e1 = n - ca
@@ -200,16 +169,8 @@ def unit_vectors(frame: np.ndarray) -> np.ndarray:
 
 
 def template_features(system: System) -> dict[str, np.ndarray]:
-    """The `template_*` features, as upstream builds them when each templated chain names
-    its template structure in a template alignment without a residue-wise alignment (an
-    `.m8` hit, say), the structure file in `structure_directory`.
-
-    Templates go by sequence: every chain with a templated chain's sequence gets its
-    template (the first, in input order, when several chains with one sequence have one).
-    Each is realigned to its chain (`template_alignment`); upstream drops a template that
-    leaves a query residue unaligned (a warning here), and chains shorter than 5 residues
-    get none. A chain's template fills slot 0 of 4 on its own tokens; distogram and unit
-    vectors are zero between chains."""
+    """Build the `template_*` features, matching templates to chains by sequence and
+    realigning each with Kalign. Chains shorter than 5 residues get no template."""
     chains = system.chains
     num_tokens = sum(len(c.sequence) for c in chains)
     restype = np.full(num_tokens, GAP)
@@ -265,12 +226,11 @@ def template_features(system: System) -> dict[str, np.ndarray]:
 
 
 def features(system: System, *, key=None) -> dict[str, np.ndarray]:
-    """The feature dict for `system`; a JAX `key` draws the reference conformers and their
-    poses, `None` gives every residue conformer 0, unposed."""
+    """Return OpenFold3's feature dict, drawing random reference conformers and rotations if
+    `key` is given."""
     table = residues()
     chains = system.chains
 
-    # Tokens: chains in input order, one per residue.
     asym = _rank([c.id for c in chains])
     entity = _rank([c.sequence for c in chains])
     copies: dict[str, int] = {}
@@ -286,7 +246,6 @@ def features(system: System, *, key=None) -> dict[str, np.ndarray]:
     num_tokens = len(seq)
     types = [THREE_LETTER[c] for c in seq]
 
-    # Atoms: each residue's table entry (CCD order, no OXT), in token order.
     num_atoms = np.array([len(table[t].atoms) for t in types], np.int32)
     start = np.concatenate([[0], np.cumsum(num_atoms)[:-1]]).astype(np.int32)
     atom_to_token = np.repeat(np.arange(num_tokens, dtype=np.int32), num_atoms)
@@ -296,7 +255,7 @@ def features(system: System, *, key=None) -> dict[str, np.ndarray]:
     charges = np.concatenate([table[t].charges for t in types])
     name_chars = np.array([[ord(ch) - 32 for ch in n.ljust(4)] for n in names])
 
-    # MSA: per chain, written into its token columns; shorter chains padded with gap rows.
+    # Chains with shallower MSAs are padded with gap rows.
     per_chain = [_chain_msa(chain) for chain in chains]
     depth = max(len(c) for c, *_ in per_chain)
     msa = np.full((depth, num_tokens), GAP, np.int64)
@@ -349,5 +308,5 @@ def features(system: System, *, key=None) -> dict[str, np.ndarray]:
 
 
 def atom_sites(system: System) -> AtomSites:
-    """What each real atom of `features(system)` is (chains in input order)."""
+    """Describe each real atom of `features(system)`, with chains in input order."""
     return _atom_sites(system.chains, residues())

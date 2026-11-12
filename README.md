@@ -5,11 +5,11 @@ AF3-family structure prediction models in JAX
 PyTorch implementations: Boltz-2, ProMERA, Protenix, Mol-1, OpenDDE, OpenFold3, ESMFold2,
 BioEmu2, AtlasFold and AtlasFold-M.
 
-These models share most of their architecture. Here each building block is written once and
-every model is a `StructureModel` whose parts are filled by shared or model-specific modules
+These models share most of their architecture. jfold writes each building block once, and
+every model is a `StructureModel` whose parts are shared or model-specific modules
 ([the models, part by part](docs/models/README.md)). Converted weights load from the Hugging
 Face hub, and `jfold.featurize` reproduces each model's featurization for proteins, so
-predicting needs neither torch nor the upstream packages.
+prediction needs neither torch nor the upstream packages.
 
 ## Predicting
 
@@ -30,26 +30,26 @@ coords = model.structure_sampler(features, inputs, state).sample(k_sample)  # [a
 plddt_logits = model.confidence_logits(features, inputs, state, coords, key=k_conf).plddt
 ```
 
-Every model follows the same steps with its own view, `features` and name
-(`pretrained.load("protenix_mini")`, `pretrained.load("esmfold2_experimental_fast")`, ...;
-`pretrained.releases()` lists them). To drive the trunk one pass at a time, call its slot:
-`model.embed`, then `model.trunk.init_state`, `model.trunk(features, inputs, state, key=k)`
-per pass, and `model.trunk.finish` for the state the heads read. End-to-end examples:
+Every model follows the same steps with its own view, `features` function and name, such as
+`"protenix_mini"` or `"esmfold2_experimental_fast"` (`pretrained.releases()` lists them all). To
+run the trunk one pass at a time, call `model.embed`, then `model.trunk.init_state`, then
+`model.trunk(features, inputs, state, key=k)` once per pass, and finally `model.trunk.finish`
+for the state the heads read. End-to-end examples:
 
-- [`examples/predict_boltz2.py`](examples/predict_boltz2.py): Boltz-2, optionally with MSAs,
-  several samples, the most confident written as PDB.
-- [`examples/predict_esmfold2.py`](examples/predict_esmfold2.py): an ESMFold2 checkpoint,
+- [`examples/predict_boltz2.py`](examples/predict_boltz2.py): Boltz-2, optionally with MSAs.
+  It draws several samples and writes the most confident one as a PDB file.
+- [`examples/predict_esmfold2.py`](examples/predict_esmfold2.py): an ESMFold2 checkpoint on a
   single sequence.
 - [`examples/predict_boltz2_ligand.py`](examples/predict_boltz2_ligand.py): a
-  protein-ligand complex with Boltz-2's own (torch) featurization, below.
+  protein-ligand complex featurized with Boltz-2's own torch pipeline, described below.
 
 ### Ligands, nucleic acids and other inputs
 
-`jfold.featurize` takes proteins (with unpaired MSAs, and templates for Boltz-2, Protenix,
-Mol-1 and OpenFold3). For anything else, featurize with the upstream pipeline and pass its
-feature dict, unbatched and as numpy, to the model's `features`, which takes its upstream's
-dict. [`examples/predict_boltz2_ligand.py`](examples/predict_boltz2_ligand.py) does this for
-a protein and a small molecule, given as SMILES or a CCD code:
+`jfold.featurize` handles proteins, with unpaired MSAs, and templates for Boltz-2, Protenix,
+Mol-1 and OpenFold3. For other inputs, featurize with the upstream pipeline and pass its
+unbatched feature dict, as NumPy arrays, to the model's `features` function, which accepts
+the upstream format. [`examples/predict_boltz2_ligand.py`](examples/predict_boltz2_ligand.py)
+does this for a protein and a small molecule given as SMILES or a CCD code:
 
 ```
 uv sync --group reference   # the upstream packages
@@ -66,28 +66,28 @@ few_step = model.structure_sampler(
 )
 ```
 
-A sampler binds the model's denoiser, its once-per-trunk context and the settings of the
-model's upstream sampler (`model.sampling`); the loop underneath (`jfold.sampling.integrate`)
-is model-agnostic.
+A sampler holds the model's denoiser, the context it computes once per trunk output, and
+the model's upstream sampler settings (`model.sampling`). The sampling loop underneath,
+`jfold.sampling.integrate`, is the same for every model.
 
 ## Conventions
 
-- Modules are unbatched (`vmap` for batches) and take masks; padding never changes the real
-  tokens' and atoms' results.
-- Sequences enter as probability vectors over each model's residue vocabulary (one-hot for a
-  fixed sequence), so a soft sequence can be optimized through the model.
-- Keys feed dropout and each model's random draws: the MSA rows a trunk pass reads (as its
-  upstream draws them; see [the models](docs/models/README.md)), ESMFold2's starting state
-  and MSA column mask, AtlasFold's masking of its language model's input. Where a key only
-  feeds dropout it may be omitted.
-- Dropout follows each upstream's rates and is off by default
-  (`eqx.nn.inference_mode(model, False)` turns it on), except ESMFold2's on its language
-  model's pair, which upstream applies at inference. Call models through `eqx.filter_jit`.
-- `jfold.blocks.pairformer.with_triangle_chunks(model, chunk_size)` runs every triangle
-  attention `chunk_size` rows at a time: slower, with attention maps of `chunk_size` rows
-  instead of all of them. It bounds memory under `grad` too, since each block of rows is
-  rematerialized on the backward pass.
-- Language models are stored once and attached on loading: ESMFold2's ESMC
+- Modules work on single examples (use `vmap` for batches) and take masks. Padding never
+  changes the results for real tokens and atoms.
+- Sequences are given as probability vectors over each model's residue vocabulary, one-hot
+  for a fixed sequence, so a soft sequence can be optimized through the model.
+- Keys are used for dropout and for each model's random choices: the MSA rows each trunk
+  pass reads, drawn as upstream does (see [the models](docs/models/README.md)), ESMFold2's
+  starting state and MSA column mask, and AtlasFold's masking of its language model input.
+  If a key is only used for dropout, it can be omitted.
+- Dropout uses each upstream's rates and is off until `eqx.nn.inference_mode(model, False)`
+  turns it on, except ESMFold2's dropout on its language model's pair features, which upstream
+  applies at inference. Call models through `eqx.filter_jit`.
+- `jfold.blocks.pairformer.with_triangle_chunks(model, chunk_size)` makes every triangle
+  attention process `chunk_size` rows at a time. This is slower, but it only holds the
+  attention maps for `chunk_size` rows at once. It also limits memory under `grad`, because
+  each block of rows is recomputed on the backward pass.
+- Language models are stored once and attached when a model is loaded: ESMFold2's ESMC
   (`trunk_init.esmc`) and AtlasFold's AtlasLM (`trunk.atlaslm`).
 
 ## Layout
@@ -100,26 +100,26 @@ is model-agnostic.
 - `jfold.model`: `StructureModel` (`embed`, `run_trunk`, `structure_sampler`,
   `confidence_logits`) and the AF3 recycling `Trunk`.
 - `jfold.slots`: the abstract type of each `StructureModel` part, which model-specific
-  modules subclass, and the values that pass between them (`Features`, `TrunkInputs`,
-  `TrunkState`, `ConfidenceLogits`); a model's own inputs travel in `Features.extras`.
+  modules subclass, and the values passed between parts (`Features`, `TrunkInputs`,
+  `TrunkState`, `ConfidenceLogits`). Model-specific inputs go in `Features.extras`.
 - `jfold.models`: each model's feature vectors (`features(dict)`) and its own modules.
-- `jfold.featurize`: torch-free featurization, one view per model
-  (`views.<model>.features(system)`, `atom_sites(system)` for writing structures).
-- `jfold.pretrained`: the released models, a loader each; their recipes in
+- `jfold.featurize`: featurization without torch, with one view per model
+  (`views.<model>.features(system)`, and `atom_sites(system)` for writing structures).
+- `jfold.pretrained`: loading the released models. The recipe for each one is in
   `jfold.pretrained.recipes`.
-- `jfold.convert`: the torch → jfold converters.
+- `jfold.convert`: converters from the torch models to jfold.
 - `jfold.sampling`: the diffusion sampler, noise schedules and upstream sampler settings.
 - `jfold.io`: saving and loading models without pickle (below).
 
 ## Saving models
 
-`jfold.io.save(model, path, metadata=...)` writes `weights.safetensors` (every array, by its
-path in the model) and `model.json` (the model's classes, fields and array shapes, plus
-metadata; `jfold.io.provenance` builds the standard fields). `jfold.io.load(path)` rebuilds
-the model. Nothing is pickled, so files depend only on jfold's class and field names;
-`jfold.io.MOVED` keeps renamed classes loading, and a field added with a default loads from
-files without it. `jfold.pretrained.save` and `upload` write and
-publish a release's copy, without the language model it shares with other releases.
+`jfold.io.save(model, path, metadata=...)` writes `weights.safetensors`, which holds every
+array keyed by its path in the model, and `model.json`, which holds the model's classes,
+fields, array shapes and metadata. `jfold.io.provenance` builds the standard metadata.
+`jfold.io.load(path)` rebuilds the model. Nothing is pickled, so files depend only on jfold's
+class and field names. `jfold.io.MOVED` lets renamed classes keep loading, and a new field
+with a default loads from files that lack it. `jfold.pretrained.save` and `upload` save and
+publish a release, without the language model it shares with other releases.
 
 ## Tests
 
@@ -129,25 +129,25 @@ uv run pytest                  # block parity with random weights; featurization
 uv run pytest -m checkpoint    # whole models against released weights (downloads them)
 ```
 
-Plain `uv sync` installs only what predicting needs. Block tests convert each upstream module
-with random weights and compare, with and without padding (`tests/`); featurization tests
-compare each view with upstream's recorded feature dicts (`tests/featurize/`); checkpoint
-tests compare whole models on a small complex (`tests/checkpoints/`). ProMERA's references
-run on a GPU.
+Plain `uv sync` installs only what prediction needs. Block tests convert each upstream
+module with random weights and compare outputs, with and without padding (`tests/`).
+Featurization tests compare each view with upstream's recorded features
+(`tests/featurize/`). Checkpoint tests compare whole models on a small complex
+(`tests/checkpoints/`). ProMERA's reference model needs a GPU.
 
-Also in the repository: [`docs/models/`](docs/models/README.md) (each model's parts),
-`docs/upstream-featurization/` (each upstream pipeline, which the views reproduce) and
-`tools/` (scripts that record the fixtures and extract the residue tables).
+Also in the repository: [`docs/models/`](docs/models/README.md) describes each model's parts,
+`docs/upstream-featurization/` each upstream featurization pipeline the views reproduce, and
+`tools/` the scripts that record the test fixtures and extract the residue tables.
 
 ## Status
 
-Every model above converts whole and matches its released checkpoints (the four
-ESMFold2-Experimental checkpoints too), with each upstream's sampler settings. Not ported:
-training heads.
+Every model above converts completely and matches its released checkpoints, including the
+four ESMFold2-Experimental checkpoints, using each upstream's sampler settings. Training
+heads are not ported.
 
-The 300M and 600M ESMFold2 scaling checkpoints, released without a confidence head, also
-come with the heads [FastPLMs](https://github.com/Synthyra/FastPLMs) trained on them:
-`esmfold2_experimental_fast_base300m_confidence` and
+The 300M and 600M ESMFold2 scaling checkpoints were released without a confidence head.
+jfold also provides them with the heads that [FastPLMs](https://github.com/Synthyra/FastPLMs)
+trained for them: `esmfold2_experimental_fast_base300m_confidence` and
 `esmfold2_experimental_fast_base600m_confidence`.
 
 ## License

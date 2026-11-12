@@ -1,13 +1,6 @@
-"""Protenix's residue table (`jfold/featurize/data/protenix.npz`) from its CCD RDKit pickle
-(`components.v20240608.cif.rdkit_mol.pkl`): for each of the 21 residue types (X is `UNK`),
-the heavy atoms in CCD order (`RES_ATOMS_DICT`, `OXT` last), their elements and formal
-charges, `ref_mask` (in `extra`), and the reference conformer `ref_conf_id` (2, the RDKit
-one), as float32, as `json_parser.add_reference_features` stores it. Views drop `OXT`
-except on a chain's last residue. Needs the `protenix` package; run once:
+"""Write `jfold/featurize/data/protenix.npz` from Protenix's CCD RDKit pickle. Run once:
 
     LAYERNORM_TYPE=torch uv run python tools/tables/extract_protenix.py
-
-`extract_mol1.py` and `extract_opendde.py` reuse `residue_table` with their own pickles.
 """
 
 import os
@@ -21,8 +14,7 @@ from jfold.featurize.system import THREE_LETTER
 
 
 def residue_table(get_mol, res_atoms: dict[str, dict[str, int]]) -> ResidueTable:
-    """The table from `get_mol(ccd_code)` (an upstream `get_component_rdkit_mol`) and the
-    pipeline's `RES_ATOMS_DICT` (atom name to position within the residue)."""
+    """Build the residue table from an upstream `get_component_rdkit_mol` and `RES_ATOMS_DICT`."""
     residues = {}
     for name in THREE_LETTER.values():
         mol = get_mol(name)
@@ -31,7 +23,6 @@ def residue_table(get_mol, res_atoms: dict[str, dict[str, int]]) -> ResidueTable
         assert [res_atoms[name][a] for a in order] == list(range(len(order))), name
         assert order[-1] == "OXT", name
         index = [mol.atom_map[a] for a in order]
-        # The heavy atoms of the RDKit mol are exactly these, in this (CCD) order.
         heavy = [i for i, atom in enumerate(mol.GetAtoms()) if atom.GetAtomicNum() > 1]
         assert index == heavy, (name, index, heavy)
         atoms = [mol.GetAtomWithIdx(i) for i in index]

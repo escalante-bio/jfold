@@ -1,4 +1,4 @@
-"""Atom attention encoder and decoder parity against each upstream."""
+"""Test the atom attention encoder and decoder against each upstream."""
 
 import dataclasses
 
@@ -25,7 +25,7 @@ HEADS, DEPTH, W, H = 2, 1, 32, 128
 
 @dataclasses.dataclass
 class Inputs:
-    """One system's atoms in every upstream's vocabulary (numpy, unbatched)."""
+    """One system's atoms in every upstream's vocabulary, as unbatched numpy arrays."""
 
     ref_pos: np.ndarray
     ref_charge: np.ndarray
@@ -75,7 +75,7 @@ def make_inputs(c_s, c_z, num_atoms, num_tokens, atom_to_token, seed) -> Inputs:
 
 
 def padded(x: Inputs, num_atoms: int, seed: int) -> Inputs:
-    """`x` with `num_atoms` garbage atoms appended, on one extra garbage token."""
+    """Append `num_atoms` garbage atoms to `x`, on one extra garbage token."""
     g = make_inputs(
         x.s_trunk.shape[1],
         x.z_trunk.shape[2],
@@ -102,8 +102,8 @@ def padded(x: Inputs, num_atoms: int, seed: int) -> Inputs:
 t = torch.from_numpy
 
 
-# --- upstream references: (module to randomize, run(Inputs) -> (a, r_update), convert,
-# feature vector, trunk widths)
+# Each upstream reference is (module to randomize, run(Inputs) -> (a, r_update), convert,
+# feature vector, trunk widths).
 
 
 def _protenix_lineage(module, explicit_args):
@@ -189,7 +189,7 @@ def _mol1():
 
 
 def _boltz_padded_batch(x: Inputs):
-    """Boltz takes a batch of whole query blocks: pad atoms (masked, on no token)."""
+    """Pad the atoms to whole query blocks for Boltz, masked and on no token."""
     n = -(-x.num_atoms // W) * W
     pad = lambda v: np.concatenate([v, np.zeros((n - len(v),) + v.shape[1:], v.dtype)])
     mask = pad(np.ones(x.num_atoms, np.float32))
@@ -422,9 +422,7 @@ def _ours(encoder, decoder, features, x: Inputs, mask):
 @pytest.mark.parametrize("padding", [0, 40], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("case", CASES)
 def test_atom_encoder_decoder_match_reference(case, padding):
-    """The encoder's token aggregates and the decoder's position updates match the
-    upstream on the real atoms, with `padding` masked garbage atoms appended (on a garbage
-    token); outputs and gradients stay finite."""
+    """Check the encoder's token aggregates and decoder's position updates with garbage appended."""
     module, run_reference, convert, features, (c_s, c_z) = CASES[case]()
     randomize(module, seed=0)
     encoder, decoder = convert(module)

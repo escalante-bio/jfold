@@ -1,5 +1,5 @@
-"""Trunk inputs: `s_inputs` (AF3 Algorithm 2), relative position features (Algorithm 3),
-and the trunk's initial single and pair (Algorithm 1, lines 1-5)."""
+"""Layers that build the trunk inputs: `s_inputs` (AF3 Algorithm 2), the relative position
+features (Algorithm 3), and the initial single and pair (Algorithm 1, lines 1-5)."""
 
 import equinox as eqx
 import jax
@@ -12,16 +12,16 @@ from jfold.slots import AbstractInputEmbedder, AbstractTrunkInit, Features, Trun
 
 
 def probabilities(x: Array, num_classes: int) -> Float[Array, "... C"]:
-    """Residue or class inputs as probability vectors over `num_classes`: integer class
-    indices (as upstream featurizers give them) one-hot, floating-point inputs (already
-    vectors, e.g. a soft sequence) as they are."""
+    """Return class inputs as probability vectors, one-hot encoding integer indices and
+    passing floats, such as a soft sequence, through unchanged."""
     if jnp.issubdtype(x.dtype, jnp.integer):
         return jax.nn.one_hot(x, num_classes)
     return x.astype(jnp.float32)
 
 
 def _offset_one_hot(offset, condition, clip):
-    """`offset` clipped to `[-clip, clip]` where `condition` holds, else a bin of its own."""
+    """One-hot encode `offset` clipped to `[-clip, clip]`, with a last bin where
+    `condition` is False."""
     index = jnp.where(condition, jnp.clip(offset + clip, 0, 2 * clip), 2 * clip + 1)
     return jax.nn.one_hot(index, 2 * clip + 2)
 
@@ -38,12 +38,10 @@ def relative_position_features(
     cyclic_period: Int[Array, " T"] | None = None,
     chain_offset: Bool[Array, "T T"] | None = None,
 ) -> Float[Array, "T T F"]:
-    """AF3 Algorithm 3's features: residue offset within a chain, token offset within a
-    residue, same entity, and chain (sym) offset; `F = 4 r_max + 2 s_max + 7`.
-
-    `cyclic_period` (Boltz-2): residue offsets wrap around cyclic chains (period > 0).
-    `chain_offset`: which pairs get a chain offset; AF3's default is pairs on the same
-    entity (ProMERA: pairs on different chains)."""
+    """Compute AF3 Algorithm 3's relative position features, `4 r_max + 2 s_max + 7`
+    wide. Residue offsets wrap on chains with a positive `cyclic_period`, and
+    `chain_offset` selects the pairs given a chain offset, by default those on the same
+    entity."""
     same_chain = asym_id[:, None] == asym_id[None, :]
     same_residue = residue_index[:, None] == residue_index[None, :]
     same_entity = entity_id[:, None] == entity_id[None, :]
@@ -67,15 +65,15 @@ def relative_position_features(
 
 
 class TrunkInit(AbstractTrunkInit[Features]):
-    """The trunk's initial single and pair from `s_inputs` (AF3 Algorithm 1, lines 2-5):
-    `s = linear_s(s_inputs)`; `z_ij = linear_i(s_i) + linear_j(s_j) + relative positions +
-    bonds` (plus any model-specific `pair_features`)."""
+    """Compute the initial single `linear_s(s_inputs)` and pair
+    `linear_i(s_i) + linear_j(s_j)` plus relative positions, bonds and `pair_features`
+    (AF3 Algorithm 1, lines 2-5)."""
 
     linear_s: Linear
     singles_to_pair: SinglesToPair
     relative_positions: Linear  # relative position features -> Cz
     bonds: Linear | None = None  # token bond features -> Cz
-    # The Protenix lineage builds the pair from `s` (after linear_s) rather than s_inputs.
+    # Protenix-lineage models build the pair from `s` after `linear_s`, not from s_inputs.
     pair_from_s_init: bool = eqx.field(static=True, default=False)
 
     def __call__(
@@ -93,7 +91,7 @@ class TrunkInit(AbstractTrunkInit[Features]):
         bond_features: Float[Array, "T T B"] | None = None,
         pair_features: Float[Array, "T T Cz"] | None = None,
     ) -> tuple[Float[Array, "T Cs"], Float[Array, "T T Cz"]]:
-        """The initial single and pair; `pair_features` are added to the pair as they are."""
+        """Return the initial single and pair, adding `pair_features` to the pair as is."""
         s = self.linear_s(s_inputs)
         z = self.singles_to_pair(s if self.pair_from_s_init else s_inputs)
         z = z + self.relative_positions(relative_position_features)
@@ -105,10 +103,9 @@ class TrunkInit(AbstractTrunkInit[Features]):
 
 
 class InputEmbedder(AbstractInputEmbedder[Features]):
-    """AF3 Algorithm 2: `s_inputs` from per-token atom aggregates (the encoder, without
-    coordinates) and the model's token features (`jfold.models.*.token_features`),
-    concatenated (AF3) or projected and added (`linear_tokens`, Boltz-2). The aggregate is
-    zeroed for tokens outside the features' `keep_aggregate`."""
+    """Compute `s_inputs` (AF3 Algorithm 2) from per-token atom aggregates, zeroed where
+    `keep_aggregate` is False, and the token features, either concatenated or projected
+    by `linear_tokens` and added."""
 
     encoder: AtomAttentionEncoder
     linear_tokens: Linear | None = None

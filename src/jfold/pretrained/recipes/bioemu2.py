@@ -1,8 +1,7 @@
-"""BioEmu2 (`bioemu2-preview` from `microsoft/bioemu2`), as `bioemu2`'s inference loads it.
+"""BioEmu2 (`bioemu2-preview` from `microsoft/bioemu2`), loaded as `bioemu2`'s inference does.
 
-The converted model's `sampling` is upstream's structure-prediction preset;
-`jfold.convert.bioemu2.sampling(upstream("bioemu2"), "equilibrium")` is the equilibrium
-one (they differ only in `step_scale`)."""
+`sampling` is upstream's structure-prediction preset. For the equilibrium preset, use
+`jfold.convert.bioemu2.sampling(upstream("bioemu2"), "equilibrium")`."""
 
 import os
 from pathlib import Path
@@ -15,8 +14,6 @@ CHECKPOINT = "bioemu2-preview"
 
 
 def _fetch(directory: Path) -> None:
-    """Into the Hugging Face cache (`bioemu2.checkpoints.get_checkpoint_files`, which reuses
-    any cached snapshot), the checkpoint and its config linked from `directory`."""
     from bioemu2.checkpoints import get_checkpoint_files
 
     files = get_checkpoint_files(CHECKPOINT)
@@ -25,8 +22,6 @@ def _fetch(directory: Path) -> None:
 
 
 def _build(checkpoint: Path):
-    """As `bioemu2.model.load_model_for_inference` builds it: the score model from the
-    `config.yaml` beside the checkpoint, with its EMA weights, on the CPU in eval mode."""
     from bioemu2.checkpoints import resolve_checkpoint_files
     from bioemu2.model import _load_score_model
 

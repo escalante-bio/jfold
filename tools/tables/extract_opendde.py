@@ -1,7 +1,4 @@
-"""OpenDDE's residue table (`jfold/featurize/data/opendde.npz`) from its own CCD RDKit
-pickle (the `opendde_v1` inference config's `ccd_components_rdkit_mol_file`, by default
-`~/.cache/opendde/common/components.cif.rdkit_mol.pkl`): the same layout as
-`extract_protenix.py`, with OpenDDE's conformers. Needs the `opendde` package; run once:
+"""Write `jfold/featurize/data/opendde.npz` from OpenDDE's CCD RDKit pickle. Run once:
 
     LAYERNORM_TYPE=torch uv run python tools/tables/extract_opendde.py
 """

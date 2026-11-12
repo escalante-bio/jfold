@@ -1,13 +1,6 @@
-"""OpenDDE's features, as its inference featurizer (`opendde.data.inference.infer_dataloader
-.InferenceDataset.process_one`, `opendde_v1` config, templates off) produces them for
-proteins (see `docs/upstream-featurization/protenix.md`, section 3): the dict `jfold.models.opendde
-.features` takes, plus upstream's frame, PAE-mask and residue-level keys.
-
-As Mol-1, except: OpenDDE's own reference conformers, posed by rotating then translating;
-the structural tokens its diffusion runs on (each residue split into a backbone token and a
-side-chain token, glycine kept whole); and no templates: OpenDDE's inference takes them only
-as search hits on PDB entries (`templatesPath`, an `.a3m` or `.hhr`), realigned with kalign,
-not as a given structure, so the view refuses them (section 3.1)."""
+"""Featurize proteins for OpenDDE, which follows Mol-1 and adds the structural tokens its
+diffusion runs on. Templates are rejected because OpenDDE's inference only takes them as
+search hits to realign. See `docs/upstream-featurization/protenix.md`, section 3."""
 
 import jax
 import numpy as np
@@ -27,7 +20,7 @@ from jfold.featurize.views.protenix import (
     residues,
 )
 
-# `STRUCTURAL_TOKEN_ROLES`: atom 0, protein backbone 1, protein side chain 2, ...
+# Role ids from upstream's `STRUCTURAL_TOKEN_ROLES`.
 PROTEIN_BB, PROTEIN_SC = 1, 2
 NO_TWIN = -1
 
@@ -39,7 +32,6 @@ STRUCTURAL_KEYS = (
     "prev_parent_residue_idx", "next_parent_residue_idx", "structural_is_polymer",
     "structural_polymer_type", "structural_seq_pos",
 )  # fmt: skip
-# Further keys of upstream's dict: token frames, the PAE mask and the residue-level features.
 KEYS = (
     *JFOLD_KEYS, "has_frame", "frame_atom_index", "is_ligand", "pae_rep_atom_mask",
     *STRUCTURAL_KEYS,
@@ -47,10 +39,8 @@ KEYS = (
 
 
 def structural_tokens(lay: Layout, frame_atom_index: np.ndarray) -> dict[str, np.ndarray]:
-    """`tokenize_structural` for protein residues: a backbone token (`N CA C O OXT`, centre
-    CA) then a side-chain token (the other atoms, centre CB), or one backbone token holding
-    all of a glycine's atoms. Side-chain tokens inherit their residue's frame; a residue's
-    neighbours are the previous and next residues of its chain."""
+    """Split each protein residue into a backbone and a side-chain token as
+    `tokenize_structural` does, keeping glycine whole."""
     num_atoms = len(lay.names)
     parent, role, twin = [], [], []
     atom_token = np.zeros(num_atoms, np.int64)
@@ -105,9 +95,8 @@ def structural_tokens(lay: Layout, frame_atom_index: np.ndarray) -> dict[str, np
 def features(
     system: System, *, key: jax.Array | None = None, use_msa: bool | None = None
 ) -> dict[str, np.ndarray]:
-    """OpenDDE's feature dict for `system`. `key`: draw each residue's reference-conformer
-    pose (rotate, then translate); None leaves the conformers centred and unposed.
-    `use_msa`: the config's `use_msa`; by default, whether any chain has an MSA."""
+    """Return OpenDDE's feature dict, randomly rotating then translating each reference
+    conformer if `key` is given."""
     system = system.without_templates("OpenDDE")
     if use_msa is None:
         use_msa = any(c.msa is not None for c in system.chains)
@@ -120,7 +109,6 @@ def features(
 
 
 def atom_sites(system: System) -> AtomSites:
-    """What each real atom of `features(system)` is (chains in input order, `OXT` on each
-    chain's last residue). `token` indexes residues: the tokens of the trunk, distogram and
-    confidence heads (`atom_to_token_idx`); the structural tokens are internal to diffusion."""
+    """Describe each real atom of `features(system)`, with `token` indexing residues rather
+    than structural tokens."""
     return _atom_sites(system.chains, residues("opendde"), oxt=True)

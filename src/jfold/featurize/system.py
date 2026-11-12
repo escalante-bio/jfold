@@ -1,4 +1,4 @@
-"""The input: chains with their sequences, (unpaired) MSAs and template structures."""
+"""The featurization input: chains with their sequences, unpaired MSAs and templates."""
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -18,11 +18,8 @@ ONE_LETTER = {v: k for k, v in THREE_LETTER.items()}
 
 @dataclass(frozen=True, eq=False)
 class Template:
-    """A template structure for one chain: its residues in order, `sequence` in one-letter
-    codes (`X` for unknown), and each residue's atom positions by atom name (`atoms`, one
-    mapping per residue; empty for a residue without coordinates, e.g. one listed in the
-    template's sequence but unresolved). Views align it to its chain as their upstream
-    does."""
+    """A template structure for one chain, with per-residue atom positions that are empty
+    for unresolved residues."""
 
     sequence: str
     atoms: tuple[Mapping[str, np.ndarray], ...] = field(repr=False)
@@ -46,10 +43,8 @@ class Template:
     def from_pdb(
         cls, text: str, chain: str | None = None, *, sequence: str | None = None
     ) -> "Template":
-        """The template in PDB text: the first model's `ATOM` records of `chain` (the first
-        chain by default), heavy atoms, the first alternate location of each. Its residues
-        are those with coordinates, in file order; with `sequence`, they are placed by their
-        residue numbers (1 for its first residue), so residues the file leaves out are
+        """Read a template's heavy atoms from the first model of `chain` in PDB text. With
+        `sequence`, residues are placed by residue number and missing ones are left
         unresolved."""
         residues: dict[tuple[int, str], tuple[str, dict]] = {}
         for line in text.splitlines():
@@ -93,9 +88,8 @@ class Template:
 
 @dataclass(frozen=True)
 class Chain:
-    """A protein chain: `sequence` in one-letter codes (`X` for unknown), optionally its
-    MSA as a3m text, whose first record is the query, and its `template` structure (one per
-    chain; views that do not take templates refuse it)."""
+    """A protein chain with an optional a3m MSA, whose first record is the query, and an
+    optional template."""
 
     id: str
     sequence: str
@@ -110,7 +104,7 @@ class Chain:
 
 @dataclass(frozen=True)
 class System:
-    """Chains in input order. Views reorder them where their upstream does."""
+    """Chains in input order. Views reorder them where their upstream pipeline does."""
 
     chains: tuple[Chain, ...]
 
@@ -120,9 +114,8 @@ class System:
             raise ValueError(f"duplicate chain ids {ids}")
 
     def chain_order(self) -> list[tuple[int, int, int]]:
-        """(chain index, entity, copy), chains grouped by entity: entities (identical
-        sequences) in order of first appearance, a later chain with an earlier chain's
-        sequence folded into that entity."""
+        """Return `(chain index, entity, copy)` for each chain, grouped by entity in order
+        of first appearance."""
         entities: dict[str, list[int]] = {}
         for i, chain in enumerate(self.chains):
             entities.setdefault(chain.sequence, []).append(i)
@@ -133,7 +126,7 @@ class System:
         ]
 
     def without_templates(self, view: str) -> "System":
-        """This system, for a view that takes no templates: an error if a chain has one."""
+        """Return this system, raising an error if any chain has a template."""
         templated = [c.id for c in self.chains if c.template is not None]
         if templated:
             raise NotImplementedError(f"{view} featurization takes no templates ({templated})")

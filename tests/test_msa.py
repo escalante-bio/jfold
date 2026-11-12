@@ -1,4 +1,4 @@
-"""MSA module parity against each upstream PyTorch implementation."""
+"""Test the MSA module against each upstream PyTorch implementation."""
 
 import dataclasses
 
@@ -46,7 +46,7 @@ def make_msa(num_rows, num_tokens, num_classes, seed) -> MSA:
 
 
 def padded(x: MSA, rows: int, tokens: int, num_classes: int) -> MSA:
-    """`x` with `rows` garbage MSA rows and `tokens` garbage tokens appended."""
+    """Append `rows` garbage MSA rows and `tokens` garbage tokens to `x`."""
     s, n = x.msa.shape
     g = make_msa(s + rows, n + tokens, num_classes, seed=7)
     for f in ("msa", "has_deletion", "deletion_value", "is_paired"):
@@ -233,8 +233,7 @@ def _forward(module, z, features, s_inputs, msa_mask, mask):
 @pytest.mark.parametrize("padding", [(0, 0), (3, 2)], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("case", CASES)
 def test_msa_module_matches_reference(case, padding):
-    """The pair after the MSA module matches the upstream on the real tokens, with masked
-    garbage MSA rows and tokens appended; outputs and gradients stay finite."""
+    """Check that the pair after the MSA module matches the upstream on the real tokens."""
     module, run_reference, convert, features, num_classes = CASES[case]()
     randomize(module, seed=0)
     ours = convert(module)
@@ -271,7 +270,7 @@ def test_subsample_rows_prefers_real_rows():
             assert rows[0] == 0 or not keep_query
             draws.add(tuple(sorted(rows)))
         assert len(draws) > 1
-        # More rows than real ones: every real row, then padding.
+        # Asking for more rows than are real gives every real row, then padding.
         rows = subsample_rows(msa_mask, 30, jax.random.key(0), keep_query=keep_query)
         assert set(range(25)) <= set(rows.tolist())
 
@@ -287,8 +286,7 @@ def _module_and_msa(num_rows):
 
 @pytest.mark.parametrize("min_rows", [None, 2], ids=["fixed", "random_depth"])
 def test_msa_module_draws_on_every_call(min_rows):
-    """With a draw, the module equals the full module run on the rows it reads (past a random
-    depth, none), and each key draws again."""
+    """Check that a module drawing rows equals the full module run on the rows it reads."""
     full, (f, s, z0) = _module_and_msa(12)
     drawing = dataclasses.replace(full, max_rows=8, min_rows=min_rows)
     mask = jnp.ones(NUM_TOKENS, bool)
@@ -306,8 +304,7 @@ def test_msa_module_draws_on_every_call(min_rows):
 
 
 def test_msa_module_draws_only_from_a_deeper_msa():
-    """A fixed draw reads every row of an MSA no deeper than it, a random depth every row of
-    one no deeper than `min_rows`: no key needed. Deeper, a draw needs one."""
+    """Check that a row draw needs a key only for an MSA deeper than it reads."""
     full, (f, s, z0) = _module_and_msa(6)
     mask = jnp.ones(NUM_TOKENS, bool)
     msa_mask = jnp.ones((6, NUM_TOKENS), bool)
@@ -320,7 +317,7 @@ def test_msa_module_draws_only_from_a_deeper_msa():
             dataclasses.replace(full, **fields)(z0, f, s, msa_mask, mask)
 
 
-# Upstream's row draws at inference, against the converted module's (`MSAModule.draw_rows`),
+# Compare upstream's row draws at inference with the converted module's (`MSAModule.draw_rows`)
 # on an MSA deeper than a pass reads. Each upstream run reports which rows it read.
 DRAWS, DEEP = 2000, 20
 
@@ -330,8 +327,7 @@ class _Read(Exception):
 
 
 def _rows_reaching(layer, channel: int, run) -> np.ndarray:
-    """`[DRAWS, DEEP]` flags: the rows reaching `layer` in each of `DRAWS` calls of `run`,
-    identified by input `channel` (where `_deep_msa` writes each row's index)."""
+    """Return `[DRAWS, DEEP]` flags for the rows reaching `layer` in each call of `run`."""
     seen = np.zeros((DRAWS, DEEP), bool)
 
     def hook(_, args):
@@ -351,7 +347,7 @@ def _rows_reaching(layer, channel: int, run) -> np.ndarray:
 
 
 def _deep_msa() -> dict:
-    """A `[DEEP, 3]` MSA (residues, no gaps) whose deletion values are the row indices."""
+    """Build a `[DEEP, 3]` MSA without gaps whose deletion values are the row indices."""
     x = make_msa(DEEP, 3, 20, seed=2)
     rows = np.broadcast_to(np.arange(DEEP, dtype=np.float32)[:, None], x.msa.shape)
     return {
@@ -365,8 +361,7 @@ def _deep_msa() -> dict:
 
 
 def _ours(module) -> np.ndarray:
-    """`[DRAWS, DEEP]` flags: the rows the converted `module` reads in each of `DRAWS`
-    passes."""
+    """Return `[DRAWS, DEEP]` flags for the rows `module` reads in each of `DRAWS` passes."""
     msa_mask = jnp.ones((DEEP, 3), bool)
 
     def read(key):
@@ -497,9 +492,7 @@ DRAW_CASES = {
 
 @pytest.mark.parametrize("case", DRAW_CASES)
 def test_rows_drawn_as_upstream(case):
-    """Over many passes, the converted module reads rows as the upstream's inference does:
-    the same range and mean of row counts, and each row (the query too) as often, to
-    sampling error."""
+    """Check that over many passes the converted module draws rows as upstream's inference does."""
     torch.manual_seed(0)
     theirs, module = DRAW_CASES[case]()
     ours = _ours(module)

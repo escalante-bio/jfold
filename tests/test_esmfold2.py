@@ -1,6 +1,4 @@
-"""ESMFold2 parity against `esm.models.esmfold2` (and ESMC, `esm.models.esmc`), block by
-block, with random weights: each jfold block, on inputs with masked garbage appended,
-matches the upstream on the real inputs alone, with finite outputs and gradients."""
+"""Test ESMFold2 and ESMC block by block against `esm.models.esmfold2` and `esm.models.esmc`."""
 
 import contextlib
 import dataclasses
@@ -37,9 +35,7 @@ C_Z, C_M, C_S_INPUTS, C_TOKEN, C_ATOM = 16, 8, 24, 32, 32
 
 @pytest.fixture(autouse=True)
 def _jax_on_cpu():
-    """ESMFold2 rounds its RoPE tables to bfloat16, as upstream does. XLA's GPU cos/sin
-    differ from torch's CPU ones in the last bit often enough to flip some of those
-    roundings (about 1e-3 downstream), so compare on JAX's CPU device."""
+    """Run JAX on the CPU, since XLA's GPU cos/sin flip some bfloat16 RoPE roundings."""
     with jax.default_device(jax.devices("cpu")[0]):
         yield
 
@@ -61,8 +57,7 @@ def _model():
 
 @contextlib.contextmanager
 def _float32_attention():
-    """The upstream's atom attention casts to bfloat16 (its flash kernels' dtype); keep
-    float32 so tolerances measure implementation differences."""
+    """Keep the upstream's atom attention in float32 instead of its flash kernels' bfloat16."""
     original = torch.Tensor.bfloat16
     torch.Tensor.bfloat16 = lambda self, *args, **kwargs: self
     try:
@@ -89,8 +84,7 @@ def _call(f, *args):
 
 @eqx.filter_jit
 def _grads(f, args, num_real):
-    """Gradients of the real part of `f(*args)` (its first output if a tuple) with respect
-    to every floating-point argument."""
+    """Return the gradients of the real part of `f(*args)` with respect to every float argument."""
 
     def loss(float_args):
         out = f(*eqx.combine(float_args, rest))
@@ -105,11 +99,8 @@ def _check(ours, ref, tol=1e-5):
     assert rel_err(ours, ref) < tol, rel_err(ours, ref)
 
 
-# --- Pair trunk ---------------------------------------------------------------------------
-
-
 def test_pair_stack():
-    """`FoldingTrunk` on `PairformerStack` of `PairMixerLayer`s."""
+    """Check upstream's `FoldingTrunk` against jfold's `PairformerStack` of `PairMixerLayer`s."""
     m = _unchunk(randomize(_layers().FoldingTrunk(n_layers=2, d_pair=C_Z, expansion_ratio=2), 0))
     gen = torch.Generator().manual_seed(1)
     z = _randn(gen, 1, NUM_TOKENS, NUM_TOKENS, C_Z)
@@ -123,9 +114,6 @@ def test_pair_stack():
     out = _call(f, stack, z_in, token_mask)
     _check(out[:NUM_TOKENS, :NUM_TOKENS], ref)
     assert_finite((out, _grads(f, (stack, z_in, token_mask), NUM_TOKENS)))
-
-
-# --- MSA ----------------------------------------------------------------------------------
 
 
 NUM_ROWS = 5
@@ -150,7 +138,7 @@ def test_outer_product_mean(divide_first):
 
 
 def test_msa_module():
-    """`MSAEncoder` on `MSAModule`: its blocks are `MSALayer`s around `PairMixerLayer`s."""
+    """Check `MSAEncoder` against an `MSAModule` of `MSALayer`s around `PairMixerLayer`s."""
     model = _model()
     m = _unchunk(randomize(model.MSAEncoder(C_M, C_Z, C_S_INPUTS, 4, 3, 2, 4), 0))
     gen = torch.Generator().manual_seed(1)
@@ -190,11 +178,8 @@ def test_msa_module():
     assert_finite((out, _grads(f, args, NUM_TOKENS)))
 
 
-# --- Diffusion transformer and conditioning ----------------------------------------------
-
-
 def test_diffusion_transformer():
-    """The token `DiffusionTransformer` on jfold's."""
+    """Check the upstream token `DiffusionTransformer` against jfold's."""
     m = randomize(
         _layers().DiffusionTransformer(
             d_model=C_TOKEN, d_pair=C_Z, num_heads=4, num_blocks=2, d_cond=C_TOKEN
@@ -224,7 +209,7 @@ def test_diffusion_transformer():
 
 
 def test_diffusion_conditioning():
-    """`DiffusionConditioning` on jfold's, with a zero-width trunk single."""
+    """Check `DiffusionConditioning` against jfold's, with a zero-width trunk single."""
     m = randomize(
         _layers().DiffusionConditioning(
             c_z=C_Z, c_s=C_TOKEN, c_s_inputs=C_S_INPUTS, sigma_data=16.0, fourier_dim=8
@@ -247,8 +232,7 @@ def test_diffusion_conditioning():
 
 
 def test_relative_positions():
-    """`ResIdxAsymIdSymIdEntityIdEncoding` on `relative_position_features` with chain
-    offsets between chains."""
+    """Check `ResIdxAsymIdSymIdEntityIdEncoding` against `relative_position_features`."""
     m = randomize(_layers().ResIdxAsymIdSymIdEntityIdEncoding(4, 2, C_Z), 0)
     asym = torch.tensor([[0, 0, 0, 1, 1, 2, 2]])
     residue = torch.tensor([[0, 1, 1, 0, 9, 3, 4]])
@@ -271,9 +255,6 @@ def test_relative_positions():
     _check(convert.relative_positions(m)(features), ref)
 
 
-# --- Atoms ---------------------------------------------------------------------------------
-
-
 def _atom_inputs(gen, num_atoms=NUM_ATOMS):
     ref_pos = 3 * _randn(gen, num_atoms, 3)
     uid = torch.sort(torch.randint(0, 4, (num_atoms,), generator=gen)).values
@@ -285,7 +266,7 @@ def _atom_inputs(gen, num_atoms=NUM_ATOMS):
 
 
 def _pad_atoms(ref_pos, uid, charge, element, chars, atom_to_token):
-    """jfold `Atoms` with `PADDING` garbage atoms appended."""
+    """Return jfold `Atoms` with `PADDING` garbage atoms appended."""
     n = ref_pos.shape[0] + PADDING
     rng = np.random.default_rng(3)
     atom_mask = mask(ref_pos.shape[0], PADDING)
@@ -310,7 +291,7 @@ def _pad_atoms(ref_pos, uid, charge, element, chars, atom_to_token):
 
 
 def _torch_atoms(ref_pos, uid, charge, element, chars, atom_to_token):
-    """The upstream encoder's keyword inputs (batched, one-hot)."""
+    """Return the upstream encoder's batched, one-hot keyword inputs."""
     n = ref_pos.shape[0]
     return {
         "ref_pos": ref_pos[None],
@@ -335,7 +316,7 @@ SWA = {
 
 @pytest.mark.parametrize("num_atoms", [NUM_ATOMS, 70], ids=["short", "long"])
 def test_sliding_window_transformer(num_atoms):
-    """`SWAAtomTransformer`: windows over the real atoms, 3D RoPE, adaLN-Zero."""
+    """Check `SWAAtomTransformer`, with windows over the real atoms, 3D RoPE and adaLN-Zero."""
     m = randomize(_layers().SWAAtomTransformer(d_atom=C_ATOM, **SWA), 0)
     gen = torch.Generator().manual_seed(1)
     ref_pos, uid, *_ = _atom_inputs(gen, num_atoms)
@@ -347,7 +328,7 @@ def test_sliding_window_transformer(num_atoms):
 
     transformer = convert.sliding_window_transformer(m)
     atom_mask = mask(num_atoms, PADDING)
-    # Garbage atoms interleaved with the real ones: windows count real atoms only.
+    # Interleave garbage atoms with the real ones, since windows count only real atoms.
     order = np.argsort(np.concatenate([np.arange(num_atoms), [2.5, 9.5, 11.5]]), kind="stable")
     pos_in = pad(ref_pos.numpy(), PADDING, axes=(0,))[order]
     uid_in = np.concatenate([uid.numpy(), [7, 8, 9]])[order]
@@ -365,8 +346,7 @@ def test_sliding_window_transformer(num_atoms):
 
 
 def test_input_embedder():
-    """`InputsEmbedder`: the sliding-window atom encoder's aggregates and token
-    features."""
+    """Check `InputsEmbedder`, the sliding-window atom encoder's aggregates and token features."""
     from esm.models.esmfold2.config import EsmFold2Config
 
     config = EsmFold2Config(
@@ -413,7 +393,6 @@ def test_input_embedder():
 
 
 def test_diffusion_module():
-    """One denoising step of `DiffusionModule`."""
     m = randomize(
         _layers().DiffusionModule(
             c_atom=C_ATOM,
@@ -481,11 +460,8 @@ def test_diffusion_module():
     assert_finite((out, _grads(f, args, NUM_ATOMS)))
 
 
-# --- Confidence ----------------------------------------------------------------------------
-
-
 def _trunk_inputs(s_inputs, z, relative_positions) -> TrunkInputs:
-    """Trunk inputs carrying only what the diffusion and confidence modules read."""
+    """Build trunk inputs holding only what the diffusion and confidence modules read."""
     extras = esmfold2.TrunkExtras(
         relative_positions=relative_positions,
         bonds=jnp.zeros_like(relative_positions),
@@ -497,7 +473,7 @@ def _trunk_inputs(s_inputs, z, relative_positions) -> TrunkInputs:
 
 
 def _confidence(module, s_inputs, z, rep_coords, atom_to_token, atom_position, mask, pair_features):
-    """The confidence logits, the structure given as each token's representative atom."""
+    """Return the confidence logits, with the structure as each token's representative atom."""
     num_tokens = mask.shape[0]
     features = block_features(
         num_tokens,
@@ -512,7 +488,6 @@ def _confidence(module, s_inputs, z, rep_coords, atom_to_token, atom_position, m
 
 
 def test_confidence():
-    """`ConfidenceHead`'s logits."""
     from esm.models.esmfold2.config import EsmFold2Config
 
     config = EsmFold2Config(
@@ -580,11 +555,8 @@ def test_confidence():
     assert_finite((pae, pde, plddt, resolved, _grads(f, args, NUM_TOKENS)))
 
 
-# --- Language model ------------------------------------------------------------------------
-
-
 def test_language_model_pair():
-    """`LanguageModelShim`: ESMC's layers combined and projected to the pair."""
+    """Check `LanguageModelShim`, which combines ESMC's layers and projects them to the pair."""
     m = randomize(_layers().LanguageModelShim(d_z=C_Z, d_model=24, num_layers=3), 0)
     gen = torch.Generator().manual_seed(1)
     hidden = _randn(gen, 1, NUM_TOKENS, 4, 24)
@@ -595,8 +567,7 @@ def test_language_model_pair():
 
 
 def test_esmc():
-    """`EsmcModel`'s hidden states (every layer's input and the final output), two chains
-    attending separately."""
+    """Check `EsmcModel`'s hidden states on two chains that attend separately."""
     from esm.models.esmc import EsmcConfig, EsmcModel
 
     m = randomize(
@@ -623,8 +594,7 @@ def test_esmc():
 
 
 def test_esmc_for_masked_lm():
-    """`EsmcForMaskedLM`'s logits (ESMC and its head) on a sequence with masked positions,
-    and the vocabulary jfold names its tokens with."""
+    """Check `EsmcForMaskedLM`'s logits on a sequence with masked positions."""
     from esm.models.esmc import EsmcConfig, EsmcForMaskedLM
     from esm.tokenization import EsmSequenceTokenizer
 
@@ -648,8 +618,7 @@ def test_esmc_for_masked_lm():
 
 
 def test_esmc_residues_match_upstream():
-    """ESMC's input ids for each protein residue, X and unusual letters included, are the
-    ones upstream's input builder gives."""
+    """Check that ESMC's input ids for each protein residue match upstream's input builder."""
     from esm.models.esmfold2.processor import ESMFold2InputBuilder
     from esm.utils.structure.input_builder import ProteinInput, StructurePredictionInput
 
@@ -668,8 +637,7 @@ def test_esmc_residues_match_upstream():
 
 
 def test_lm_layout():
-    """`lm_layout` and `lm_input` pack chains as upstream's `compute_lm_hidden_states`:
-    collapsed multi-token residues, chains in `asym_id` order, BOS/EOS rows."""
+    """Check that `lm_layout` and `lm_input` pack chains as `compute_lm_hidden_states` does."""
     asym = np.array([1, 1, 1, 0, 0, 2])
     residue = np.array([0, 1, 1, 0, 1, 0])
     protein = np.array([True, True, True, True, True, False])
@@ -684,9 +652,7 @@ def test_lm_layout():
 
 
 def test_soft_features():
-    """`features` takes the residue type and MSA as probability vectors (a soft sequence)
-    under `jit`: one-hot vectors give the indices' features; soft ones reach the residue
-    channels and, where only the query row is real, the profile."""
+    """Check that `features` accepts the residue type and MSA as probability vectors under `jit`."""
     gen = torch.Generator().manual_seed(1)
     f = _system(gen, True)
     f["msa_attention_mask"][1:, :2] = False  # tokens 0 and 1: query row only
@@ -708,9 +674,6 @@ def test_soft_features():
     np.testing.assert_allclose(out.msa_features[0, :, :33], soft, rtol=1e-6)
 
 
-# --- Experimental model type ----------------------------------------------------------------
-
-
 def _experimental():
     from esm.models.esmfold2 import experimental
 
@@ -720,9 +683,7 @@ def _experimental():
 @pytest.mark.parametrize("padding", [0, PADDING], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("rows", [NUM_ROWS, 1], ids=["msa", "query-only"])
 def test_experimental_msa(rows, padding):
-    """The experimental `MSAEncoder` on `TrackedMSA` around `MSAModule`: MSA-first
-    `MSALayer`s, the outer product divided before its projection; no update without MSA
-    rows past the query."""
+    """Check the experimental `MSAEncoder` against `TrackedMSA` around `MSAModule`."""
     m = _unchunk(randomize(_experimental().MSAEncoder(C_M, C_Z, C_S_INPUTS, 4, 2, 2, 4), 0))
     gen = torch.Generator().manual_seed(1)
     z = _randn(gen, 1, NUM_TOKENS, NUM_TOKENS, C_Z)
@@ -767,8 +728,7 @@ def test_experimental_msa(rows, padding):
 
 @pytest.mark.parametrize("padding", [0, PADDING], ids=["unpadded", "padded"])
 def test_experimental_confidence(padding):
-    """The experimental `ConfidenceHead` (PAE without a norm, pLDDT; no PDE or resolved) on
-    `ConfidenceModule`."""
+    """Check the experimental `ConfidenceHead` against `ConfidenceModule`."""
     from esm.models.esmfold2.config import EsmFold2Config
 
     config = EsmFold2Config(
@@ -828,12 +788,8 @@ def test_experimental_confidence(padding):
     assert_finite((pae, plddt, _grads(f, args, NUM_TOKENS)))
 
 
-# --- Whole model ---------------------------------------------------------------------------
-
-
 def _small_model(msa: bool, experimental: bool = False):
-    """A small release model, or experimental one (its MSA features disabled without an
-    MSA, as in the -Fast checkpoints)."""
+    """Build a small release or experimental model."""
     from esm.models.esmfold2.config import EsmFold2Config
 
     config = EsmFold2Config(
@@ -899,7 +855,7 @@ def _small_model(msa: bool, experimental: bool = False):
 
 
 def _system(gen, msa: bool):
-    """An unbatched upstream input dict: two chains, one with a two-token residue."""
+    """Build an unbatched upstream input dict with two chains, one with a two-token residue."""
     ref_pos, uid, charge, element, chars, atom_to_token = _atom_inputs(gen)
     first = np.searchsorted(atom_to_token.numpy(), np.arange(NUM_TOKENS))
     f = {
@@ -936,7 +892,7 @@ def _system(gen, msa: bool):
 
 
 def _pad_system(f, padding=PADDING):
-    """`f` with `padding` masked garbage tokens and atoms (and two MSA rows) appended."""
+    """Append `padding` masked garbage tokens and atoms, and two MSA rows, to `f`."""
     if padding == 0:
         return dict(f)
     rng = np.random.default_rng(5)
@@ -973,8 +929,7 @@ def _pad_system(f, padding=PADDING):
 
 
 def _upstream(m, f, z0, coords):
-    """The upstream forward from state `z0`, with the sampler replaced by `coords`; returns
-    its outputs and what the sampler was given."""
+    """Run the upstream forward from state `z0`, with the sampler replaced by `coords`."""
     seen = {}
 
     def sample(**kw):
@@ -999,7 +954,7 @@ NUM_LOOPS = 3
 
 
 def _upstream_schedule(head, cap: float = 256.0):
-    """`DiffusionStructureHead.sample`'s noise levels, `fold`'s default cap applied."""
+    """Return `DiffusionStructureHead.sample`'s noise levels with `fold`'s default cap applied."""
     schedule = head.inference_noise_schedule(STEPS)
     schedule = schedule[schedule <= cap]
     return torch.nn.functional.pad(schedule, (1, 0), value=cap)
@@ -1007,9 +962,7 @@ def _upstream_schedule(head, cap: float = 256.0):
 
 @pytest.mark.parametrize("msa", [False, True], ids=["single-sequence", "msa"])
 def test_esmfold2(msa):
-    """The whole model from the same initial trunk state: `s_inputs`, the trunk's pair,
-    the distogram, a denoising step from the upstream's trunk, and the confidence logits
-    for a structure."""
+    """Check the whole model from the same initial trunk state."""
     m = _small_model(msa)
     gen = torch.Generator().manual_seed(1)
     f = _system(gen, msa)
@@ -1055,7 +1008,7 @@ def test_esmfold2(msa):
     _check(z[:n, :n], seen["z_trunk"][0])
     _check(distogram[:n, :n], out["distogram_logits"][0])
 
-    # Later stages from the upstream's trunk, so errors do not compound.
+    # Run the later stages from the upstream trunk so errors do not compound.
     z_ref = jnp.array(pad(seen["z_trunk"][0].numpy(), PADDING, axes=(0, 1)))
     _, _, _, ours, conf = run(model, features, z0_in, x_in, coords_in, t, z_ref)
     _check(ours[:NUM_ATOMS], denoised)
@@ -1067,7 +1020,7 @@ def test_esmfold2(msa):
 
 
 def _run(model, features, z0, x_noisy, coords, t, z_trunk=None):
-    """The trunk from the pair `z0`, then the heads (on the pair `z_trunk` if given)."""
+    """Run the trunk from the pair `z0`, then the heads, on the pair `z_trunk` if given."""
     inputs = model.embed(features, key=KEY)
     state = TrunkState(s=inputs.s_init, z=z0)
     for _ in range(NUM_LOOPS):
@@ -1085,8 +1038,7 @@ def _run(model, features, z0, x_noisy, coords, t, z_trunk=None):
 @pytest.mark.parametrize("padding", [0, PADDING], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("msa", [False, True], ids=["single-sequence", "msa"])
 def test_esmfold2_experimental(msa, padding):
-    """The whole experimental model, as `test_esmfold2` (both start the trunk from zeros
-    here)."""
+    """Check the whole experimental model as `test_esmfold2` does."""
     m = _small_model(msa, experimental=True)
     gen = torch.Generator().manual_seed(1)
     f = _system(gen, msa)
@@ -1096,7 +1048,7 @@ def test_esmfold2_experimental(msa, padding):
 
 
 def _check_experimental(m, f, out, seen, padding, gen, tol=1e-5, **feature_kwargs):
-    """Compare a converted experimental model with the upstream run `out`/`seen` on `f`."""
+    """Compare a converted experimental model on `f` with the upstream run's `out` and `seen`."""
     num_tokens, num_atoms = f["token_attention_mask"].shape[0], f["atom_attention_mask"].shape[0]
     x_noisy = 10 * _randn(gen, 1, num_atoms, 3)
     t = 7.5
@@ -1123,7 +1075,7 @@ def _check_experimental(m, f, out, seen, padding, gen, tol=1e-5, **feature_kwarg
             token_attention_mask=seen["token_attention_mask"],
         )["x_denoised"][0]
 
-    # Column masking off, as in the upstream run.
+    # Turn column masking off, as in the upstream run.
     model = _column_mask_rate(convert.esmfold2_experimental(m), 0.0)
     model = assert_round_trip(model)
     assert_schedule(model.sampling, _upstream_schedule(m.structure_head))
@@ -1154,18 +1106,14 @@ def _run_from_init(model, features, x_noisy, coords, t, z_trunk=None):
 
 
 def _column_mask_rate(model, rate: float):
-    """`model` with its trunk init masking `rate` of the MSA columns."""
+    """Return `model` with its trunk init masking a fraction `rate` of the MSA columns."""
     return dataclasses.replace(
         model, trunk_init=dataclasses.replace(model.trunk_init, msa_column_mask_rate=rate)
     )
 
 
-# --- Released weights ----------------------------------------------------------------------
-
-
 def _reference(name: str):
-    """The released model as `jfold.pretrained` builds it (as `from_pretrained` loads it for
-    inference), from the Hugging Face cache."""
+    """Load the released model from the Hugging Face cache, as `from_pretrained` does."""
     from jfold import pretrained
     from jfold.pretrained.recipes import esmfold2 as releases
 
@@ -1174,9 +1122,7 @@ def _reference(name: str):
 
 @pytest.mark.checkpoint
 def test_esmfold2_checkpoint():
-    """The released ESMFold2 (`biohub/ESMFold2`, ESMC-6B bundled) on a two-chain complex:
-    ESMC's hidden states, then the whole model from the same initial state and ESMC
-    states, as in `test_esmfold2`. The language model's per-loop dropout is off."""
+    """Check the released ESMFold2 (`biohub/ESMFold2`, with ESMC-6B) on a two-chain complex."""
     from esm.models.esmfold2.processor import ESMFold2InputBuilder
     from esm.utils.structure.input_builder import ProteinInput, StructurePredictionInput
 
@@ -1287,9 +1233,7 @@ EXPERIMENTAL = (
     "name", ["esmfold2_experimental_fast_base300m", "esmfold2_experimental_fast_base600m"]
 )
 def test_esmc_sizes_checkpoint(name):
-    """The smaller ESMCs of the scaling checkpoints (300M, 600M): hidden states match the
-    upstream's, both in float32 from the same (bfloat16-valued) weights; and the shared
-    entry `jfold.pretrained` attaches is that same ESMC."""
+    """Check the smaller ESMCs of the scaling checkpoints (300M and 600M)."""
     from esm.models.esmfold2.processor import ESMFold2InputBuilder
     from esm.utils.structure.input_builder import ProteinInput, StructurePredictionInput
 
@@ -1329,9 +1273,7 @@ def test_esmc_sizes_checkpoint(name):
 @pytest.mark.checkpoint
 @pytest.mark.parametrize("name", EXPERIMENTAL)
 def test_esmfold2_experimental_checkpoint(name):
-    """A released experimental checkpoint on a two-chain complex (with an MSA for those
-    with an MSA encoder), as `test_esmfold2_experimental`. ESMC is not loaded (its parity
-    is `test_esmfold2_checkpoint`'s); random states stand in for its hidden states."""
+    """Check a released experimental checkpoint on a two-chain complex."""
     from esm.models.esmfold2.processor import ESMFold2InputBuilder
     from esm.utils.structure.input_builder import ProteinInput, StructurePredictionInput
 
@@ -1375,8 +1317,7 @@ def test_esmfold2_experimental_checkpoint(name):
 
 @pytest.mark.parametrize("experimental", [False, True], ids=["release", "experimental"])
 def test_msa_column_mask(experimental, monkeypatch):
-    """Column masking leaves the query row and padding alone and masks a column in every
-    other row; the trunk with it matches the upstream's, its own draw replaced by ours."""
+    """Check that column masking spares the query row and padding and drops whole columns."""
     import esm.models.esmfold2.experimental as upstream_experimental
     import esm.models.esmfold2.model as upstream_model
 
@@ -1415,8 +1356,7 @@ def test_msa_column_mask(experimental, monkeypatch):
 
 @pytest.mark.parametrize("experimental", [False, True], ids=["release", "experimental"])
 def test_run_trunk(experimental):
-    """`run_trunk` is `embed`, `init_state`, the passes and `finish` with its keys split as
-    documented (dropout on, as ESMFold2's language-model pair runs, so the keys matter)."""
+    """Check that `run_trunk` equals `embed`, `init_state`, the passes and `finish`."""
     gen = torch.Generator().manual_seed(1)
     m = _small_model(msa=True, experimental=experimental)
     model = (convert.esmfold2_experimental if experimental else convert.esmfold2)(m)
@@ -1443,9 +1383,7 @@ def test_run_trunk(experimental):
 
 
 def test_model_runs_esmc():
-    """Without precomputed states the model runs its ESMC on the features' `lm_tokens`: the
-    same trunk inputs as the states computed outside (`lm_layout`, `lm_input`,
-    `token_hidden_states`), and a soft sequence's gradient reaches the language model."""
+    """Check that without precomputed states the model runs ESMC on the features' `lm_tokens`."""
     from esm.models.esmc import EsmcConfig, EsmcModel
 
     gen = torch.Generator().manual_seed(1)
@@ -1491,8 +1429,7 @@ def test_model_runs_esmc():
 
 
 def test_language_model_required():
-    """ESMFold2 never runs without its language model: a model without ESMC needs
-    precomputed states, and ESMC's input needs concrete ids."""
+    """Check that ESMFold2 refuses to run without its language model."""
     gen = torch.Generator().manual_seed(1)
     f = _system(gen, msa=False)
     del f["lm_hidden_states"]

@@ -1,26 +1,6 @@
-"""AtlasFold and AtlasFold-M: protein structure from one sequence per chain, with no MSA,
-on the AtlasLM language model.
-
-Every trunk pass runs AtlasLM (an ESMC reproduction: `jfold.models.esmfold2.ESMCLayer`s with
-rotary positions restarting in each chain) on the sequence with a fresh random share of its
-residues masked, and reads its layers' states (a learned softmax mix) and attention logits
-(one projection per layer) into a single and a pair. Four Pairformer layers, each first
-adding a product-and-difference pair from the single, refine them; they are added to the
-recycled single and pair, (AtlasFold-M) templates update the pair, and the Pairformer runs:
-36 pair-only layers, then 12 with the single track.
-
-Atoms are the 14 atom slots of each residue (atom14): `N = 14 T` positions, slot `a` of
-residue `t` at `14 t + a`, with a mask for the slots a residue type lacks. The diffusion
-module is AF3's, on these atoms: its atom transformers attend in windows of 4 residues to
-the 12 residues around them, only within 4 residue indices on the same chain, biased by
-residue offsets and, within a residue, the residue type's ideal atom offsets and distances.
-
-The rest runs on the shared blocks: Pairformer and template layers, the diffusion
-conditioning and transformers, the confidence Pairformer and heads. A converted model is a
-`jfold.model.StructureModel` reading `AtlasFoldFeatures`: `ResidueEmbedder`,
-`ResidueTrunkInit`, `AtlasFoldTrunk` (holding AtlasLM), `DiffusionModule`, and
-`MultimerConfidence` or `MonomerConfidence`. Inputs are unbatched, with masks that are
-False for padding."""
+"""AtlasFold and AtlasFold-M, which predict protein structure from one sequence per chain
+using the AtlasLM language model instead of an MSA. Atoms are the 14 atom slots of each
+residue (atom14), with slot `a` of residue `t` at index `14 t + a`."""
 
 import equinox as eqx
 import jax
@@ -69,29 +49,28 @@ from jfold.slots import (
 
 NUM_CLASSES = 21  # ARNDCQEGHILKMFPSTWYV, then X
 ATOMS = 14  # atom slots per residue
-# AtlasLM's vocabulary (`atlaslm.alphabet.VOCAB`): <cls> <pad> <eos> <unk>, 28 residue
-# letters, <mask>; the embedding has 64 rows.
+# AtlasLM's vocabulary (`atlaslm.alphabet.VOCAB`) has 64 embedding rows.
 LM_VOCAB = 64
 _LM_RESIDUES = "LAGVSERTIDPKQNFYMHWCXBUZO.-|"
 _LM_MASK = 4 + len(_LM_RESIDUES)
 # AtlasLM's token for each of AtlasFold's residue classes.
 _LM_COLUMN = np.array([4 + _LM_RESIDUES.index(r) for r in "ARNDCQEGHILKMFPSTWYVX"])
-# Atom windows: 4 residues of queries, keys 4 residues either side.
+# Atom windows have 4 residues of queries, with keys reaching 4 residues either side.
 _WINDOW = 4
 _MAX_OFFSET = 4
 
 
 def lm_residues(residues: Float[Array, "T 21"]) -> Float[Array, "T 64"]:
-    """Residue probability vectors moved to AtlasLM's columns."""
+    """Map residue probability vectors to AtlasLM's vocabulary columns."""
     return residues @ jax.nn.one_hot(_LM_COLUMN, LM_VOCAB)
 
 
 class LMInputs(eqx.Module):
-    """AtlasLM's input: each chain in its own rows, wrapped in <cls> and <eos>."""
+    """AtlasLM's input, with each chain in its own rows, wrapped in <cls> and <eos>."""
 
     tokens: Float[Array, "S 64"]  # probability vectors over the vocabulary
     positions: Int[Array, " S"]  # rotary positions, restarting at 0 in each chain
-    sequence_id: Int[Array, " S"]  # positions attend to the others of the same id
+    sequence_id: Int[Array, " S"]  # positions only attend to positions with the same id
     maskable: Bool[Array, " S"]  # the residue rows, which the random mask may replace
     rows: Int[Array, " T"]  # each residue's row
 
@@ -121,19 +100,14 @@ def relative_positions(
     entity_id: Int[Array, " T"],
     sym_id: Int[Array, " T"],
 ) -> Float[Array, "T T 73"]:
-    """AF3's relative position features without the token offset (every token is a
-    residue): residue offset within a chain, same entity, chain offset within an entity."""
+    """Return AF3's relative position features without the token offset."""
     f = relative_position_features(asym_id, residue_index, entity_id, residue_index, sym_id)
     return jnp.concatenate([f[..., :66], f[..., 132:]], axis=-1)
 
 
-# AtlasLM
-
-
 class AtlasLM(eqx.Module):
-    """AtlasLM, ESMC's architecture: pre-norm transformer layers with rotary positions,
-    attention restricted to equal `sequence_id`s. `layer` also returns the attention logits,
-    which AtlasFold reads."""
+    """AtlasLM, an ESMC-architecture language model whose `layer` also returns attention
+    logits."""
 
     embed: Linear  # token probability vectors -> D
     layers: ESMCLayer  # stacked
@@ -155,7 +129,8 @@ class AtlasLM(eqx.Module):
         rope: tuple[Float[Array, "S R"], Float[Array, "S R"]],
         attend: Bool[Array, "S S"],
     ) -> tuple[Float[Array, "S D"], Float[Array, "heads S S"]]:
-        """One layer: the new states and the attention logits (before masking)."""
+        """Run one layer, returning the new states and the attention logits before masking.
+        """
         heads = lambda y: y.reshape(*y.shape[:-1], layer.num_heads, -1)
         h = layer.norm(x)
         q = _rotate(heads(layer.norm_q(layer.linear_q(h))), *rope)
@@ -173,7 +148,7 @@ class AtlasLM(eqx.Module):
         positions: Int[Array, " S"],
         sequence_id: Int[Array, " S"],
     ) -> Float[Array, "S D"]:
-        """The final normalized states (AtlasLM's embeddings)."""
+        """Return the final normalised states."""
         rope = self.rope(positions)
         attend = sequence_id[:, None] == sequence_id[None, :]
 
@@ -184,12 +159,9 @@ class AtlasLM(eqx.Module):
         return self.norm(x)
 
 
-# The trunk
-
-
 class LMLayer(eqx.Module):
-    """A Pairformer layer that first adds a pair from the single: the difference and
-    product of two projections of the normalized single (`SinglesToPair`)."""
+    """A Pairformer layer that first adds a pair built from the single by `SinglesToPair`.
+    """
 
     norm: LayerNorm
     to_pair: SinglesToPair
@@ -210,11 +182,8 @@ class LMLayer(eqx.Module):
 
 
 class LanguageModelEmbedder(eqx.Module):
-    """AtlasLM's states and attention logits to the trunk's single and pair: the states
-    (input embedding and each layer's output, normalized) mixed by softmax weights, then an
-    MLP; each layer's logits, clipped to ±100 and scaled by 1/100 (zero across sequences),
-    projected per layer and summed, then an MLP; then `stack`. AtlasFold-M zeroes the
-    pair between chains (`intra_chain`)."""
+    """Turn AtlasLM's layer states and attention logits into the trunk's single and pair,
+    zeroing the pair between chains if `intra_chain`."""
 
     layer_logits: Float[Array, " layers+1"]
     norm_states: LayerNorm
@@ -237,8 +206,8 @@ class LanguageModelEmbedder(eqx.Module):
         *,
         key: PRNGKeyArray | None = None,
     ) -> tuple[Float[Array, "T Cs"], Float[Array, "T T Cz"]]:
-        """The single and pair to add to the trunk's, with AtlasLM reading `inputs` with
-        `mask_rows` masked (among its residue rows)."""
+        """Return the single and pair to add to the trunk, with AtlasLM's `mask_rows`
+        masked."""
         masked = mask_rows & inputs.maskable
         tokens = jnp.where(masked[:, None], jax.nn.one_hot(_LM_MASK, LM_VOCAB), inputs.tokens)
         rows = inputs.rows
@@ -296,17 +265,15 @@ class AtlasFoldPairformer(AbstractPairformer):
 
 
 class AtlasFoldTrunk(AbstractTrunk[AtlasFoldFeatures]):
-    """The trunk, from zeros. One pass: recycle the previous single and pair, add the
-    language model's (AtlasLM reading the sequence with `mlm_rate` of its residues masked,
-    drawn afresh every pass), add templates, run the Pairformer."""
+    """AtlasFold's trunk, which masks a fresh random fraction `mlm_rate` of AtlasLM's
+    residues on every pass."""
 
     recycle_s: Recycle
     recycle_z: Recycle
     language_model: LanguageModelEmbedder
     pairformer: AtlasFoldPairformer
     templates: TemplateEmbedder | None = None
-    # None only as stored: `jfold.pretrained` attaches the shared AtlasLM on loading
-    # (`jfold.pretrained.recipes.atlasfold`).
+    # `jfold.pretrained` attaches the shared AtlasLM when loading.
     atlaslm: AtlasLM | None = None
     mlm_rate: float = eqx.field(static=True, default=0.15)
 
@@ -334,7 +301,7 @@ class AtlasFoldTrunk(AbstractTrunk[AtlasFoldFeatures]):
         *,
         key: PRNGKeyArray | None = None,
     ) -> TrunkState:
-        """One pass with AtlasLM's rows `mask_rows` masked (among its residue rows)."""
+        """Run one pass with AtlasLM's residue rows in `mask_rows` masked."""
         if self.atlaslm is None:
             raise ValueError(
                 "AtlasFold needs its language model: this model has no AtlasLM (load it with "
@@ -356,9 +323,6 @@ class AtlasFoldTrunk(AbstractTrunk[AtlasFoldFeatures]):
         return TrunkState(s=s, z=z)
 
 
-# Templates
-
-
 def template_features(
     residues: Float[Array, "Nt T 21"],
     pseudo_beta: Float[Array, "Nt T 3"],
@@ -368,10 +332,7 @@ def template_features(
     asym_id: Int[Array, " T"],
     token_mask: Bool[Array, " T"],
 ) -> Float[Array, "Nt T T 86"]:
-    """AtlasFold-M's template pair features, within chains only: pseudo-beta distance bins
-    (39, from 3.25 Å to 50.75 Å; none below), the pseudo-beta pair mask, unit vectors to the
-    other CA in each residue's backbone frame (N, CA, C), the frame pair mask, and both
-    residue types."""
+    """Build AtlasFold-M's template pair features, which are zero between chains."""
     same_chain = (asym_id[:, None] == asym_id[None, :]) & token_mask[:, None] & token_mask[None, :]
 
     def one(residues, cb, cb_mask, bb, bb_mask):
@@ -409,22 +370,16 @@ def template_features(
     return jax.vmap(one)(residues, pseudo_beta, pseudo_beta_mask, backbone, backbone_mask)
 
 
-# Diffusion
-
-
 class AtomPairEncoding(eqx.Module):
-    """The atom-pair encoding of the atom windows, kept factored: the residue offset of
-    each (query, key) residue pair (one-hot within ±`max_offset` on the same chain, else
-    zero), and within a residue the residue type's ideal atom offsets and distances
-    (`table`, mixed by the residue probabilities); also which residue pairs may attend
-    (on the same chain, within `max_offset` residue indices)."""
+    """The atom-pair encoding of the atom windows, factored into residue offsets, ideal atom
+    geometry within each residue, and an attention mask."""
 
     table: Float[Array, "21 14 14 4"]
     max_offset: int = eqx.field(static=True, default=_MAX_OFFSET)
 
     @property
     def windows(self) -> CenteredWindows:
-        """The windows over residues; the atom windows are 14 times as long."""
+        """The windows over residues. The atom windows are 14 times as long."""
         return CenteredWindows(queries=_WINDOW, keys=_WINDOW + 2 * self.max_offset)
 
     def __call__(
@@ -450,16 +405,14 @@ class AtomPairEncoding(eqx.Module):
 
 
 def _to_atoms(x: Float[Array, "NW q k ..."]) -> Float[Array, "NW q*14 k*14 ..."]:
-    """A residue-pair array repeated over both residues' atom slots."""
     nw, q, k = x.shape[:3]
     x = jnp.broadcast_to(x[:, :, None, :, None], (nw, q, ATOMS, k, ATOMS, *x.shape[3:]))
     return x.reshape(nw, q * ATOMS, k * ATOMS, *x.shape[5:])
 
 
 class AtomTransformer(eqx.Module):
-    """The diffusion transformer within atom windows (`LocalAttention` in its layers),
-    biased by a linear map of the atom-pair encoding, without a norm; residue pairs that
-    may not attend get -1e9."""
+    """The diffusion transformer within atom windows, biased by a linear map of the
+    atom-pair encoding."""
 
     linear_bias: Linear  # encoding (10 residue + 4 atom channels) -> layers * heads
     layers: DiffusionTransformerLayer  # stacked
@@ -496,8 +449,7 @@ class AtomTransformer(eqx.Module):
 
 
 class AtomEncoder(eqx.Module):
-    """Atom queries from each residue type's per-slot embedding and the noisy positions,
-    through the atom transformer; per-residue means of their projection."""
+    """Encode atoms and average them per residue."""
 
     embed: Linear  # residue probabilities -> 14 Ca, the atom single per slot
     linear_r: Linear  # noisy positions -> Ca
@@ -522,8 +474,7 @@ class AtomEncoder(eqx.Module):
 
 
 class AtomDecoder(eqx.Module):
-    """Token updates to each atom slot (a projection per slot), the atom transformer, and
-    a position update per atom."""
+    """Decode token updates to a position update per atom."""
 
     project_a: NormLinear  # Ct -> 14 Ca
     transformer: AtomTransformer
@@ -605,17 +556,12 @@ class DiffusionModule(AbstractDiffusionModule[AtlasFoldFeatures]):
         return sigma_data**2 / scale * x_noisy + sigma_data * t / jnp.sqrt(scale) * r_update
 
 
-# Confidence
-
-
 def _rep_coords(features: AtlasFoldFeatures, coords: Float[Array, "N 3"]) -> Float[Array, "T 3"]:
-    """Each residue's pseudo-beta position."""
     return atom14(coords)[jnp.arange(features.pseudo_beta.shape[0]), features.pseudo_beta]
 
 
 class MultimerConfidence(AbstractConfidenceModule[AtlasFoldFeatures]):
-    """AtlasFold-M's confidence head: AF3's (`ConfidenceModule`, on the residue types and
-    the pseudo-beta distances) with the trunk single projected first."""
+    """AtlasFold-M's confidence head: AF3's, with the trunk single projected first."""
 
     project_s: NormLinear
     module: ConfidenceModule
@@ -644,9 +590,8 @@ class MultimerConfidence(AbstractConfidenceModule[AtlasFoldFeatures]):
 
 
 class MonomerConfidence(AbstractConfidenceModule[AtlasFoldFeatures]):
-    """AtlasFold's confidence head: the pair conditioned on the residue types and the
-    pseudo-beta distances, then one Pairformer for the single (pLDDT, resolved) and a
-    pair-only one for the pair (PAE)."""
+    """AtlasFold's confidence head, with separate Pairformers for the single and pair heads.
+    """
 
     singles_to_pair: SinglesToPair  # residue probabilities -> pair
     distances: DistanceEmbedding
@@ -679,19 +624,15 @@ class MonomerConfidence(AbstractConfidenceModule[AtlasFoldFeatures]):
         )
 
 
-# Inputs
-
-
 class ResidueEmbedder(AbstractInputEmbedder[AtlasFoldFeatures]):
-    """`s_inputs`: the residue probabilities, as they are."""
+    """Use the residue probabilities unchanged as `s_inputs`."""
 
     def __call__(self, features: AtlasFoldFeatures) -> Float[Array, "T 21"]:
         return features.residues
 
 
 class ResidueTrunkInit(AbstractTrunkInit[AtlasFoldFeatures]):
-    """The initial single and pair from the residue probabilities and the relative
-    positions (`TrunkInit.initial`; AtlasFold has no bond features)."""
+    """Build the initial single and pair without bond features, which AtlasFold lacks."""
 
     init: TrunkInit
 
@@ -707,25 +648,20 @@ class ResidueTrunkInit(AbstractTrunkInit[AtlasFoldFeatures]):
 
 
 def atom14(coords: Float[Array, "N 3"]) -> Float[Array, "T 14 3"]:
-    """Positions (`[14 T, 3]`, as the model samples them) by residue and atom14 slot."""
+    """Reshape positions from `[14 T, 3]` to `[T, 14, 3]`."""
     return coords.reshape(-1, ATOMS, 3)
 
 
-# Features
-
-
 def features(f: dict) -> AtlasFoldFeatures:
-    """`AtlasFoldFeatures` from an AtlasFold feature dict (`atlasfold.common.featurize`'s
-    keys, unbatched; `template.*` optional). `aatype` (`[T, 21]`) may be any probability
-    vectors, e.g. a soft sequence: they reach AtlasLM too, in its residue rows. Any of the
-    arrays may be traced under `jit`."""
+    """Build `AtlasFoldFeatures` from an AtlasFold feature dict, where `aatype` may be a
+    soft sequence that also reaches AtlasLM."""
     a = arrays(f)
     token_mask = a["seq_mask"].astype(bool)
     residues = probabilities(a["aatype"], NUM_CLASSES)
     asym_id = a["asym_id"]
     input_ids = a["lm.input_ids"]
     rows = a["seq_tok_idx"]
-    # The residue rows from `residues` (exactly `input_ids`' one-hot for a one-hot sequence).
+    # For a one-hot sequence this equals the one-hot of `input_ids`.
     tokens = jax.nn.one_hot(input_ids, LM_VOCAB)
     tokens = tokens.at[jnp.where(token_mask, rows, input_ids.shape[0])].set(
         lm_residues(residues), mode="drop"

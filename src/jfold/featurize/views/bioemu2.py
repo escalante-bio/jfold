@@ -1,7 +1,5 @@
-"""BioEmu2's features, as `bioemu2`'s featurization produces them for proteins (see
-`docs/upstream-featurization/bioemu2.md`): the dict `jfold.models.bioemu2.features` takes.
-
-Deterministic: reference conformers are the CCD ideal coordinates, unposed."""
+"""Featurize proteins for BioEmu2 deterministically, as `bioemu2`'s featurization does. See
+`docs/upstream-featurization/bioemu2.md`."""
 
 import numpy as np
 
@@ -12,12 +10,12 @@ from jfold.featurize.sites import AtomSites
 from jfold.featurize.sites import atom_sites as _atom_sites
 from jfold.featurize.system import THREE_LETTER, System
 
-# The Boltz-1 alphabet: PAD, GAP, the 20 amino acids by three-letter code, UNK_PROT, ...
+# Token ids follow the Boltz-1 alphabet.
 NUM_TOKEN_TYPES = 33
 _AMINO_ACIDS = sorted(name for name in THREE_LETTER.values() if name != "UNK")
 TOKEN = {"-": 1, **{k: 2 + _AMINO_ACIDS.index(v) for k, v in THREE_LETTER.items() if k != "X"}}
 TOKEN |= dict.fromkeys("XJBZOU", 22)
-METHOD = {"structure": 7, "equilibrium": 4}  # "non-md", "md"
+METHOD = {"structure": 7, "equilibrium": 4}  # upstream's "non-md" and "md" methods
 MAX_MSA_ROWS = 4092
 ATOM_WINDOW = 32
 
@@ -27,13 +25,11 @@ def residues() -> ResidueTable:
 
 
 def chain_order(system: System) -> list[tuple[int, int, int]]:
-    """(chain index, entity, copy) in upstream's order (`System.chain_order`)."""
+    """Return `(chain index, entity, copy)` in upstream's order."""
     return system.chain_order()
 
 
 def _msa_rows(chain) -> tuple[np.ndarray, np.ndarray]:
-    """A chain's MSA as residue classes `[S, L]` and deletion counts: its a3m (row 0 as
-    written, after the query check), or the sequence alone."""
     if chain.msa is None:
         return np.array([[TOKEN[c] for c in chain.sequence]]), np.zeros(
             (1, len(chain.sequence)), int
@@ -43,16 +39,11 @@ def _msa_rows(chain) -> tuple[np.ndarray, np.ndarray]:
     if query != chain.sequence:
         raise ValueError(f"chain {chain.id}: the a3m's first row is not the chain's sequence")
     rows = a3m.rows[:MAX_MSA_ROWS]
-    classes = np.array([[TOKEN[c] for c in row] for row in rows])  # '.' raises, as upstream
+    classes = np.array([[TOKEN[c] for c in row] for row in rows])  # upstream also fails on '.'
     return classes, a3m.deletions[: len(rows)]
 
 
 def _msa(chains, paired_queries: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Residue classes, deletion counts and paired flags `[S, T]`, as `tokenize_msa` builds
-    them. With unpaired MSAs only, every chain is cut to the shallowest chain's depth, row 0
-    paired (every row for a homomer). With `paired_queries` (each chain's query as its paired
-    MSA) a heteromer instead keeps every chain's rows: the queries (paired), then each
-    chain's other rows side by side, gaps once a chain runs out."""
     per_chain = [_msa_rows(chain) for chain in chains]
     num_tokens = sum(len(chain.sequence) for chain in chains)
     heteromer = len({chain.sequence for chain in chains}) > 1
@@ -82,9 +73,9 @@ def _msa(chains, paired_queries: bool) -> tuple[np.ndarray, np.ndarray, np.ndarr
 def features(
     system: System, *, mode: str = "structure", paired_queries: bool = False
 ) -> dict[str, np.ndarray]:
-    """The feature dict for `system`, in `mode` ("structure" or "equilibrium").
-    `paired_queries`: as upstream builds it when each chain's paired MSA is its query alone
-    (as mosaic passes them), so a heteromer's chains keep all their MSA rows (`_msa`)."""
+    """Return BioEmu2's feature dict for `system` in `mode` "structure" or "equilibrium".
+    Set `paired_queries` when each chain's paired MSA is its query alone, as mosaic passes
+    them."""
     system = system.without_templates("BioEmu2")
     table = residues()
     order = chain_order(system)
@@ -98,7 +89,6 @@ def features(
         sym_id += [copy] * len(chain.sequence)
     num_tokens = len(res_type)
 
-    # Atoms: each residue's table entry, in token order.
     coords, charge, element, names, token_of_atom, center = [], [], [], [], [], []
     for token, residue in enumerate(c for chain in chains for c in chain.sequence):
         r = table[THREE_LETTER[residue]]
@@ -140,7 +130,7 @@ def features(
         "asym_id": np.array(asym_id, np.int64),
         "entity_id": np.array(entity_id, np.int64),
         "sym_id": np.array(sym_id, np.int64),
-        "residue_index": np.arange(num_tokens, dtype=np.int64),  # a global counter
+        "residue_index": np.arange(num_tokens, dtype=np.int64),  # counts across all chains
         "token_bonds": np.zeros((num_tokens, num_tokens, 1), np.float32),
         "msa": msa_one_hot,
         "msa_mask": np.ones((depth, num_tokens), np.int64),
@@ -160,5 +150,5 @@ def features(
 
 
 def atom_sites(system: System) -> AtomSites:
-    """What each real atom of `features(system)` is (chains in BioEmu2's entity-grouped order)."""
+    """Describe each real atom of `features(system)`, with chains in BioEmu2's order."""
     return _atom_sites([system.chains[i] for i, _, _ in chain_order(system)], residues())

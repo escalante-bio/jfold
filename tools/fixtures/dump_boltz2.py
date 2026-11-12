@@ -1,44 +1,9 @@
-"""Dump Boltz-2's upstream feature dict for each fixture system in
-`tests/featurize/data/systems.json`.
+"""Write Boltz-2's upstream features for the test systems to `tests/featurize/data/`.
 
-Run from the jfold root:
-
-    uv run python tools/fixtures/dump_boltz2.py
-
-Writes `tests/featurize/data/boltz2_<system>.npz`, numpy arrays only, without the batch
-axis (the layout `jfold.models.boltz2.features` takes). Every tensor in the feature dict is
-saved under its upstream key, plus two keys for parity tests:
-
-- `ref_pos_raw` `[A, 3]` float32: the reference conformer coordinates before Boltz's
-  per-residue centering and random rotation/translation, padded like `ref_pos`, from a
-  second featurization in which `center_random_augmentation` is the identity.
-- `ref_conformer_id` `[R]` int64: the conformer (of the 10 stored in each
-  `~/.boltz/mols/<RES>.pkl`) used for each residue, in token order, replayed from
-  `np.random.default_rng(42)`, the generator `PredictionDataset.__getitem__` creates. The
-  script checks that the replay reproduces `ref_pos_raw`.
-
-Determinism:
-
-- The conformer choice uses numpy's `default_rng(42)`, which upstream seeds itself.
-- `ref_pos` is centred per residue, then given a random rotation and a N(0, 1) Å
-  translation, both drawn from torch's global RNG. The script calls `torch.manual_seed(0)`
-  first, so the saved `ref_pos` is reproducible with this torch version, but a numpy/JAX
-  port cannot reproduce those draws. Compare `ref_pos` up to a per-residue rigid motion,
-  or compare against `ref_pos_raw`.
-- Nothing else in the dict is random for protein-only inference input.
-
-MSAs come from the fixture a3m through the YAML `msa:` field (`msa: empty` for chains
-without one). The MSA server is never contacted.
-
-Templates (the systems in `template_systems.json`, PDB files from `make_templates.py`) go in
-one mmCIF holding every templated chain, renamed to its query chain, each its own entity
-whose full sequence is the template's sequence (its residues with coordinates, unless the
-system gives the sequence); the YAML matches them by chain (`chain_id` and `template_id`).
-This is how mosaic passes templates to Boltz-2.
+Each file also holds `ref_pos_raw`, the conformers before Boltz's random pose,
+and `ref_conformer_id`, the conformer each residue uses.
 
     uv run python tools/fixtures/dump_boltz2.py [system ...]
-
-dumps the named systems only.
 """
 
 import json
@@ -55,8 +20,6 @@ CACHE = Path.home() / ".boltz"
 
 
 def _template_cif(system: dict, path: Path) -> list[str]:
-    """Write the templated chains of `system` to one mmCIF at `path`, as mosaic does; their
-    chain ids."""
     import gemmi
 
     from jfold.featurize.system import THREE_LETTER
@@ -116,7 +79,6 @@ def _yaml(system: dict, directory: Path) -> str:
 
 
 def _featurize(system: dict, augment: bool) -> dict[str, np.ndarray]:
-    """Run the upstream pipeline on `system`; the unbatched feature dict as numpy."""
     import boltz.data.feature.featurizerv2 as fv2
     import boltz.main as bm
 
@@ -158,14 +120,11 @@ def _featurize(system: dict, augment: bool) -> dict[str, np.ndarray]:
 
 
 def _conformer_ids(n_residues: int) -> np.ndarray:
-    """Replay upstream's per-residue conformer choice: `random.choice(conf_ids)` on
-    `default_rng(42)`, once per residue in token order, with no earlier draws."""
     rng = np.random.default_rng(42)
     return np.array([int(rng.choice(list(range(10)))) for _ in range(n_residues)])
 
 
 def _check_conformers(f: dict, conf_ids: np.ndarray, system: dict) -> None:
-    """`ref_pos_raw` equals the chosen conformer's coordinates of each residue's atoms."""
     import pickle
 
     from boltz.data import const

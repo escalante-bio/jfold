@@ -1,4 +1,4 @@
-"""Protenix-lineage (Protenix, OpenDDE, Mol-1) model pieces."""
+"""Model pieces shared by Protenix, OpenDDE and Mol-1."""
 
 import jax
 import jax.numpy as jnp
@@ -17,9 +17,7 @@ def atom_features(
     ref_element: Float[Array, "N 128"],
     ref_atom_name_chars: Float[Array, "N 4 64"],
 ) -> Float[Array, "N 389"]:
-    """The atom feature vector, in the column order `convert.protenix.atom_encoder` lays out:
-    position, arcsinh of the charge, mask, element and name characters; zero for atoms
-    without a reference conformer."""
+    """Build the atom feature vector in `convert.protenix.atom_encoder`'s column order."""
     features = jnp.concatenate(
         [
             ref_pos,
@@ -36,9 +34,7 @@ def atom_features(
 def template_features(
     distogram, pseudo_beta_mask, aatype, unit_vector, backbone_frame_mask, asym_id
 ):
-    """Each template's pair feature vector `[N, T, T, 108]`: distogram, pseudo-beta pair
-    mask, residue type of the column then of the row token, unit vector and backbone-frame
-    pair mask; pair features are zero between chains."""
+    """Build each template's pair features, which are zero between chains."""
     same_chain = (asym_id[:, None] == asym_id[None, :])[..., None]
     restype = jax.nn.one_hot(aatype, 32)
     n = aatype.shape[-1]
@@ -56,12 +52,9 @@ def template_features(
 
 
 def features(f: dict) -> Features:
-    """`jfold.model.Features` from a Protenix feature dict (`protenix.data` featurization;
-    numpy or JAX arrays, unbatched). Traceable: `restype` and `profile` may be soft, `msa`
-    may be residue probabilities `[S, T, 32]` instead of indices, and the optional
-    `atom_pad_mask` and `token_pad_mask` mark padding (e.g. atom slots left empty when a
-    residue is swapped for one with fewer atoms). Without `msa` (or `template_aatype`) keys
-    the trunk skips the MSA module (or the template embedder)."""
+    """Build `jfold.model.Features` from a Protenix feature dict, where `restype`, `profile`
+    and `msa` may be soft. Without `msa` or `template_aatype`, the trunk skips the MSA
+    module or template embedder."""
     a = arrays(f)
     num_atoms, num_tokens = a["ref_pos"].shape[0], a["asym_id"].shape[0]
     ref_mask = a["ref_mask"].astype(jnp.float32)

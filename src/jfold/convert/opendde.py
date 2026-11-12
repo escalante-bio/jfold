@@ -1,5 +1,4 @@
-"""The whole OpenDDE model (`opendde.model.opendde.OpenDDE`). Its blocks convert with
-`jfold.convert.protenix`."""
+"""Convert a whole OpenDDE model using the block converters in `jfold.convert.protenix`."""
 
 import dataclasses
 
@@ -12,7 +11,7 @@ from jfold.models.opendde import PairEmbedding, StructuralDiffusion, StructuralT
 
 
 def structural_token_expander(m) -> StructuralTokenExpander:
-    """`StructuralTokenExpander` with its full per-role-pair projection."""
+    """Convert a `StructuralTokenExpander` with the full per-role-pair projection."""
     if m.pair_projection_mode != "full":
         raise ValueError(f"expected pair_projection_mode='full', got {m.pair_projection_mode!r}")
     norm, hidden, _, out = m.single_split_mlp
@@ -55,9 +54,7 @@ def structural_token_expander(m) -> StructuralTokenExpander:
 
 
 def structure_model(m) -> StructureModel:
-    """A whole OpenDDE model: Protenix's, its diffusion run on structural tokens
-    (`StructuralDiffusion`), its distogram and confidence heads reading the residue trunk
-    (`pair_output_space='residue'`). Inputs come from `jfold.models.opendde.features`."""
+    """Convert a whole OpenDDE model as Protenix with diffusion on structural tokens."""
     if not m.enable_structural_token_expansion:
         raise ValueError("expected structural-token expansion")
     if m.pair_output_space != "residue":

@@ -1,4 +1,4 @@
-"""OpenFold3 modules (`openfold3.core.model`)."""
+"""Converters for OpenFold3 modules (`openfold3.core.model`)."""
 
 import jax.numpy as jnp
 
@@ -80,7 +80,7 @@ def triangle_multiplication(m, *, outgoing: bool) -> TriangleMultiplication:
 
 
 def triangle_attention(m) -> TriangleAttention:
-    # Both modules attend around the starting node; the block transposes for the ending one.
+    # Both modules are starting-node ones, and the block transposes the pair for the other.
     if not m.starting:
         raise ValueError("expected a starting-node TriangleAttention")
     return TriangleAttention(
@@ -108,7 +108,7 @@ def attention_pair_bias(m) -> AttentionPairBias:
 
 
 def pair_block(pair, single=None) -> PairformerLayer:
-    """A `PairBlock` (the pair half of a block), with an optional single-track update."""
+    """Convert a `PairBlock`, the pair half of a block, with an optional single update."""
     return PairformerLayer(
         tri_mul_out=triangle_multiplication(pair.tri_mul_out, outgoing=True),
         tri_mul_in=triangle_multiplication(pair.tri_mul_in, outgoing=False),
@@ -129,7 +129,6 @@ def pairformer_layer(m) -> PairformerLayer:
 
 
 def pairformer_stack(m) -> PairformerStack:
-    """`PairFormerStack`."""
     return PairformerStack(layers=stack([pairformer_layer(b) for b in m.blocks]))
 
 
@@ -166,7 +165,7 @@ def diffusion_transformer_layer(m) -> DiffusionTransformerLayer:
 
 
 def diffusion_transformer(m) -> DiffusionTransformer:
-    """`DiffusionTransformer` (token-level: no atom windows)."""
+    """Convert a token-level `DiffusionTransformer`."""
     return DiffusionTransformer(
         pair_bias=stack(
             [
@@ -195,8 +194,8 @@ def _atom_layer(m) -> DiffusionTransformerLayer:
 
 
 def atom_transformer(m) -> DiffusionTransformer:
-    """`DiffusionTransformer` within atom windows (`n_query` set). It normalizes the
-    windowed atom pair once for all layers; each layer gets a copy of that norm."""
+    """Convert a windowed `DiffusionTransformer`, copying the shared pair norm to each
+    layer."""
     attn = m.blocks[0].attention_pair_bias
     windows = ShiftedWindows(queries=attn.n_query, keys=attn.n_key)
     transformer = DiffusionTransformer(
@@ -214,8 +213,7 @@ def atom_transformer(m) -> DiffusionTransformer:
 
 
 def atom_encoder(m) -> AtomAttentionEncoder:
-    """`AtomAttentionEncoder`, with or without noisy positions. Features come from
-    `jfold.models.openfold3.atom_features`."""
+    """Convert an `AtomAttentionEncoder`, with or without noisy positions."""
     ref = m.ref_atom_feature_embedder
     noisy = getattr(m, "noisy_position_embedder", None)
     trunk = None
@@ -260,9 +258,7 @@ def atom_decoder(m) -> AtomAttentionDecoder:
 
 
 def diffusion_module(m) -> DiffusionModule:
-    """`DiffusionModule`. OpenFold3 conditions the pair on the raw relative-position
-    features (`relpos_complex`), with no projection of their own: they are the relative
-    positions `DiffusionModule.prepare` takes."""
+    """Convert a `DiffusionModule`, which reads unprojected relative position features."""
     c = m.diffusion_conditioning
     return DiffusionModule(
         conditioning=DiffusionConditioning(
@@ -309,7 +305,7 @@ def outer_product_mean(m) -> ProjectedOuterProductMean:
 
 
 def msa_layer(m) -> MSALayer:
-    """`MSAModuleBlock`; a block that skips its MSA update has none."""
+    """Convert an `MSAModuleBlock`, leaving out the MSA update if the block skips it."""
     msa = None
     if not m.skip_msa_update:
         msa = MSAUpdate(
@@ -326,9 +322,7 @@ def msa_layer(m) -> MSALayer:
 
 
 def msa_module(embedder, stack_module) -> MSAModule:
-    """The MSA embedding (`MSAModuleEmbedder`) and `MSAModuleStack`. Features come from
-    `jfold.models.openfold3.msa_features`. Draws the embedder's rows per pass
-    (`_max_rows`), the query like any other."""
+    """Convert the `MSAModuleEmbedder` and `MSAModuleStack` to one `MSAModule`."""
     layers = [msa_layer(b) for b in stack_module.blocks]
     last = layers[-1] if layers[-1].msa is None else None
     regular = layers[:-1] if last is not None else layers
@@ -343,8 +337,6 @@ def msa_module(embedder, stack_module) -> MSAModule:
 
 
 def _max_rows(embedder) -> int | None:
-    """The rows `MSAModuleEmbedder` draws per pass: a fixed number (`subsample_all_msa`,
-    real rows first), or every row."""
     if embedder.subsample_main_msa:
         raise NotImplementedError("per-chain subsampling of the main MSA")
     if not embedder.subsample_all_msa:
@@ -355,8 +347,7 @@ def _max_rows(embedder) -> int | None:
 
 
 def template_embedder(m) -> TemplateEmbedder:
-    """`TemplateEmbedderAllAtom`. Features come from
-    `jfold.models.openfold3.template_features`."""
+    """Convert a `TemplateEmbedderAllAtom`."""
     pair_embedder, pair_stack = m.template_pair_embedder, m.template_pair_stack
     if not all(b.tri_mul_first for b in pair_stack.blocks):
         raise NotImplementedError("template blocks with triangle attention first")
@@ -380,8 +371,6 @@ def template_embedder(m) -> TemplateEmbedder:
 
 
 def _atom_head(m) -> AtomHead:
-    """`PerResidueLDDTAllAtom` or `ExperimentallyResolvedHeadAllAtom`: one linear packing
-    `max_atoms_per_token` × `c_out` logits per token."""
     p, b = m.max_atoms_per_token, m.c_out
     w = array(m.linear.weight).reshape(p, b, -1).transpose(0, 2, 1)
     bias = None if m.linear.bias is None else array(m.linear.bias).reshape(p, b)
@@ -389,8 +378,7 @@ def _atom_head(m) -> AtomHead:
 
 
 def confidence_module(m) -> ConfidenceModule:
-    """`AuxiliaryHeadsAllAtom`: its `PairformerEmbedding` and the PAE, PDE, pLDDT and
-    resolved heads."""
+    """Convert `AuxiliaryHeadsAllAtom` with its `PairformerEmbedding`."""
     emb = m.pairformer_embedding
     edges = jnp.linspace(emb.min_bin, emb.max_bin, emb.no_bin)
     return ConfidenceModule(
@@ -398,7 +386,7 @@ def confidence_module(m) -> ConfidenceModule:
         distances=DistanceEmbedding(edges=edges, linear=below_first_bin(emb.linear_distance)),
         stack=pairformer_stack(emb.pairformer_stack),
         pae=PairHead(linear=linear(m.pae.linear), norm=layer_norm(m.pae.layer_norm)),
-        # Symmetrized after the projection: the bias counts twice.
+        # Upstream symmetrizes after the projection, so the bias counts twice.
         pde=PairHead(
             linear=doubled_bias(m.pde.linear),
             norm_terms=layer_norm(m.pde.layer_norm),
@@ -410,19 +398,17 @@ def confidence_module(m) -> ConfidenceModule:
 
 
 def distogram_head(m) -> PairHead:
-    """`DistogramHead` (it symmetrizes after its projection)."""
+    """Convert a `DistogramHead`, which symmetrizes after its projection."""
     return PairHead(linear=doubled_bias(m.linear), symmetric=True)
 
 
 def input_embedder(m) -> InputEmbedder:
-    """`InputEmbedderAllAtom`'s `s_inputs`. Token features come from
-    `jfold.models.openfold3.token_features`."""
+    """Convert the part of `InputEmbedderAllAtom` that computes `s_inputs`."""
     return InputEmbedder(encoder=atom_encoder(m.atom_attn_enc))
 
 
 def trunk_init(m) -> TrunkInit:
-    """`InputEmbedderAllAtom`'s initial single and pair (relative positions from
-    `jfold.blocks.inputs.relative_position_features`, bonds `[T, T, 1]`)."""
+    """Convert `InputEmbedderAllAtom`'s initial single and pair."""
     return TrunkInit(
         linear_s=linear(m.linear_s),
         singles_to_pair=SinglesToPair(linear_i=linear(m.linear_z_i), linear_j=linear(m.linear_z_j)),
@@ -432,8 +418,7 @@ def trunk_init(m) -> TrunkInit:
 
 
 def structure_model(m) -> StructureModel:
-    """A whole OpenFold3 model (`projects.of3_all_atom.model.OpenFold3`). Inputs come from
-    `jfold.models.openfold3.features`."""
+    """Convert a whole OpenFold3 model (`projects.of3_all_atom.model.OpenFold3`)."""
     return StructureModel(
         input_embedder=input_embedder(m.input_embedder),
         trunk_init=trunk_init(m.input_embedder),
@@ -452,9 +437,7 @@ def structure_model(m) -> StructureModel:
 
 
 def sampling(m) -> UpstreamSampler:
-    """`SampleDiffusion`'s settings, with the config's noise schedule and full-rollout
-    step count: re-centred, randomly rotated and translated, no alignment, ending at
-    `sigma_data * s_min`."""
+    """Return the sampler settings of OpenFold3's `SampleDiffusion`."""
     schedule = m.config.architecture.noise_schedule
     return UpstreamSampler(
         sigma_data=float(schedule.sigma_data),

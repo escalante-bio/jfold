@@ -1,38 +1,9 @@
-"""Upstream Protenix feature dicts for the shared fixture systems.
+"""Write Protenix's upstream features for the test systems to `tests/featurize/data/`.
 
-Runs `protenix.data.template.featurize` (the featurizer jfold's Protenix test
-uses) on every system in `tests/featurize/data/systems.json` and saves
-`tests/featurize/data/protenix_<system>.npz` (numpy arrays only, no pickles).
-
-Run from `~/jfold`:
-
-    LAYERNORM_TYPE=torch uv run python tools/fixtures/dump_protenix.py
-
-Determinism: the only random step for protein-only inputs is the per-residue
-`ref_pos` augmentation (`protenix.utils.geometry.random_transform`: a translation from
-`np.random.uniform` and a rotation from `scipy.spatial.transform.Rotation.random()`,
-both on numpy's global RNG). numpy and `random` are seeded with `SEED` right before each
-system, so the files are reproducible bit-for-bit. A torch-free featurizer cannot
-reproduce the rotations without replaying numpy's legacy RNG in the same order, so the
-unaugmented conformer is saved too (`aux_ref_pos_conformer`) for parity up to a
-per-residue rigid motion.
-
-Keys:
-- every numpy array of the upstream dict, under its own name;
-- `constraint_feature__<name>` for the nested `constraint_feature` dict;
-- `aux_*` extras (not upstream features) for parity tests: `aux_ref_pos_conformer` (the
-  CCD/RDKit reference conformer per atom, before centring and augmentation,
-  `atom_array.ref_pos`), `aux_atom_name`, `aux_res_name`, `aux_element`, `aux_seed`.
-
-Templates (the systems in `template_systems.json`, PDB files from `make_templates.py`):
-`ChainInput.template` is the PDB file's chain as gemmi reads it, as mosaic passes it; with
-a `sequence` in the system, a residue for each of its positions, those the file leaves out
-without atoms. Upstream refuses a template with another number of residues than its chain;
-those systems are reported and get no file.
+Each file also holds `aux_ref_pos_conformer`, the conformers before the random
+pose, which a featurizer without torch cannot easily reproduce.
 
     LAYERNORM_TYPE=torch uv run python tools/fixtures/dump_protenix.py [system ...]
-
-dumps the named systems only.
 """
 
 import json
@@ -52,9 +23,8 @@ FIXTURES = HERE.parents[1] / "tests" / "featurize" / "data"
 
 
 def template_chain(spec: dict):
-    """The template `spec` as a `gemmi.Chain`: the PDB file's chain; with a `sequence`, a
-    residue for each of its positions (residue number = position), those the file leaves
-    out without atoms."""
+    """Read the template as a `gemmi.Chain`, adding atom-less residues for positions missing from
+    the PDB file."""
     import gemmi
 
     from jfold.featurize.system import THREE_LETTER
@@ -75,10 +45,7 @@ def template_chain(spec: dict):
 
 
 def chain_inputs(system: dict, msa_root: Path):
-    """`ChainInput`s for a system: chains with an `msa` get a precomputed MSA directory
-    (`non_pairing.a3m` = the a3m; `pairing.a3m` = the query only, so nothing is paired);
-    chains without one get Protenix's dummy single-sequence MSA (`compute_msa=False`).
-    A chain's `template` is its `template_chain`."""
+    """Build the upstream `ChainInput`s, with a query-only pairing file so nothing is paired."""
     from protenix.data.template import ChainInput
 
     chains = []
@@ -132,7 +99,7 @@ def main():
     for name, system in systems.items():
         try:
             out = featurize_system(system)
-        except ValueError as error:  # `_extract_chain_template`'s length check
+        except ValueError as error:  # From `_extract_chain_template`'s length check.
             if not str(error).startswith("Template chain has"):
                 raise
             print(f"{name}: upstream refuses it ({error})")

@@ -1,4 +1,4 @@
-"""Full diffusion module (one denoising step) parity against each upstream."""
+"""Test the full diffusion module (one denoising step) against each upstream."""
 
 import dataclasses
 
@@ -25,7 +25,7 @@ t = torch.from_numpy
 
 @dataclasses.dataclass
 class Tokens:
-    """Token-level inputs: features for relative positions, and `s_inputs`."""
+    """Token-level inputs, the relative position features and `s_inputs`."""
 
     asym_id: np.ndarray
     residue_index: np.ndarray
@@ -49,8 +49,7 @@ def make_tokens(num_tokens, c_inputs, seed) -> Tokens:
 
 
 def _protenix_lineage(DiffusionModule, precomputed_features):
-    """Mol-1 and OpenDDE take the windowed atom offsets and the relative-position features
-    (`relp`) precomputed."""
+    """Set up a Mol-1 or OpenDDE reference."""
     blocks = {"n_blocks": 1, "n_heads": HEADS}
     m = DiffusionModule(
         sigma_data=16.0,
@@ -404,8 +403,7 @@ def _denoise(module, atoms, s_inputs, s_trunk, z_trunk, relative_positions, toke
 @pytest.mark.parametrize("padding", [0, 40], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("case", CASES)
 def test_denoising_step_matches_reference(case, padding):
-    """One denoising step matches the upstream on the real atoms, with `padding` masked
-    garbage atoms (on a garbage token) appended; outputs and gradients stay finite."""
+    """Check that one denoising step matches the upstream with garbage atoms appended."""
     module, run_reference, convert, features, relative_positions, (c_s, c_z, c_inputs) = CASES[
         case
     ]()

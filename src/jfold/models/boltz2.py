@@ -20,8 +20,7 @@ def atom_features(
     ref_element: Float[Array, "N 128"],
     ref_atom_name_chars: Float[Array, "N 4 64"],
 ) -> Float[Array, "N 388"]:
-    """The atom feature vector Boltz-2's `AtomEncoder` embeds: position, charge, element and
-    name characters."""
+    """Build the atom feature vector that Boltz-2's `AtomEncoder` embeds."""
     return jnp.concatenate(
         [
             ref_pos,
@@ -34,8 +33,7 @@ def atom_features(
 
 
 def msa_features(msa, has_deletion, deletion_value, is_paired):
-    """The MSA feature vector `[S, T, 36]`: residue probabilities `[S, T, 33]` (one-hot for
-    a fixed alignment), has-deletion, deletion value, paired."""
+    """Build the MSA feature vector, with the paired flag last."""
     return jnp.concatenate(
         [
             msa,
@@ -60,16 +58,13 @@ def template_features(
     max_dist=50.75,
     num_bins=38,
 ):
-    """Each template's pair feature vector `[N, T, T, 109]`, as Boltz-2 computes it from the
-    template's coordinates: the Cβ distogram, Cβ pair mask, direction from each residue's
-    frame to the other's Cα, frame pair mask (all zero between parts the template does not
-    relate), then the row and column tokens' residue types."""
+    """Compute each template's pair features from its coordinates, as Boltz-2 does."""
     boundaries = jnp.linspace(min_dist, max_dist, num_bins - 1)
     cb_dist = jnp.linalg.norm(cb[:, :, None] - cb[:, None, :], axis=-1)
     distogram = jax.nn.one_hot((cb_dist[..., None] > boundaries).sum(-1), num_bins)
     # Cα of token i in the frame of token j, R_j^T (ca_i - t_j). Boltz-2 takes the norm over
-    # a trailing axis of size one, so its "unit vector" is the sign of each component; the
-    # weights were trained on that.
+    # a trailing axis of size one, so its "unit vector" is the sign of each component, and
+    # the weights were trained on that.
     vector = jnp.einsum("njkl,nijk->nijl", frame_rot, ca[:, :, None] - frame_t[:, None])
     unit_vector = jnp.sign(vector)
     pair = lambda m: (m[:, :, None] * m[:, None, :])[..., None]
@@ -88,9 +83,7 @@ def template_features(
 
 
 def token_features(res_type, profile, deletion_mean, method, modified, cyclic_period, mol_type):
-    """The token feature vector Boltz-2 projects into `s_inputs`: residue-type probabilities
-    `[T, 33]` (one-hot for a fixed sequence), MSA profile and deletion mean, method (12),
-    modified (2), cyclic, and molecule type (4)."""
+    """Build the token feature vector that Boltz-2 projects into `s_inputs`."""
     return jnp.concatenate(
         [
             res_type,
@@ -110,20 +103,19 @@ NUM_CONTACT_CLASSES = 5  # `boltz.data.const.contact_conditioning_info`
 
 
 def bond_features(token_bonds, type_bonds):
-    """The token bond feature vector `[T, T, 8]`: bonded, then the bond type (7 classes)."""
+    """Build the bond features: the bonded flag, then the one-hot bond type."""
     return jnp.concatenate([token_bonds, jax.nn.one_hot(type_bonds, NUM_BOND_TYPES)], axis=-1)
 
 
 def contact_features(contact_conditioning, contact_threshold):
-    """The contact feature vector `[T, T, 6]`: contact class (5, one-hot: unspecified,
-    unselected, pocket-to-binder, binder-to-pocket, contact), then distance threshold."""
+    """Build the contact features: the one-hot contact class, then the distance threshold.
+    """
     return jnp.concatenate([contact_conditioning, contact_threshold[..., None]], axis=-1)
 
 
 class ContactConditioning(eqx.Module):
-    """Boltz-2's contact conditioning: each pair's contact class and normalized threshold
-    (`contact_features`), with the threshold's Fourier embedding, projected; unspecified
-    and unselected pairs get a learned vector each instead."""
+    """Boltz-2's contact conditioning, with learned vectors for unspecified and unselected
+    pairs."""
 
     fourier: FourierEmbedding
     linear: Linear  # [classes 2-4, threshold, Fourier] -> Cz
@@ -144,8 +136,7 @@ class ContactConditioning(eqx.Module):
 
 
 class PairInputs(AbstractPairInputs):
-    """Boltz-2's extra pair inputs: relative positions, bonds and contacts (from
-    `Features.pair_features`), each embedded."""
+    """Boltz-2's extra pair inputs: embedded relative positions, bonds and contacts."""
 
     relative_positions: Linear
     bonds: Linear  # bond_features -> Cz
@@ -160,9 +151,7 @@ class PairInputs(AbstractPairInputs):
 
 
 class TrunkInit(AbstractTrunkInit[Features]):
-    """`jfold.blocks.inputs.TrunkInit` with Boltz-2's contact conditioning: the features'
-    `pair_features` are the `contact_features`, embedded before they are added to the
-    pair."""
+    """`jfold.blocks.inputs.TrunkInit` with Boltz-2's contact conditioning."""
 
     init: inputs.TrunkInit
     contacts: ContactConditioning
@@ -180,10 +169,7 @@ class TrunkInit(AbstractTrunkInit[Features]):
 
 
 def features(f: dict) -> Features:
-    """`jfold.model.Features` from a Boltz-2 feature dict (`boltz.data` featurization, as
-    `Boltz2InferenceDataModule` produces it; unbatched). `msa` is upstream's residue
-    classes `[S, T]` or probabilities over them `[S, T, 33]` (soft sequences); every
-    step is traceable, so the dict may be built inside `jit`."""
+    """Build `jfold.model.Features` from a Boltz-2 feature dict, where `msa` may be soft."""
     a = arrays(f)
     atom_to_token = a["atom_to_token"].argmax(-1)
     first_atom = jnp.argmax(a["atom_to_token"], axis=0)  # each token's first atom

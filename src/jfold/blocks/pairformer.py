@@ -1,8 +1,5 @@
-"""The Pairformer (AF3 Algorithm 17) and its blocks.
-
-Inputs are unbatched: single `[T, Cs]`, pair `[T, T, Cz]`, and a token mask `[T]` that is
-False for padding. Padded tokens never affect real ones; their own outputs are unspecified
-but finite."""
+"""The Pairformer of AF3 Algorithm 17, on an unbatched single `[T, Cs]` and pair
+`[T, T, Cz]`. Padded tokens never affect real ones."""
 
 import abc
 import dataclasses
@@ -30,11 +27,12 @@ def _pair_mask(mask: Bool[Array, " T"]) -> Bool[Array, "T T"]:
 
 
 class TriangleMultiplication(eqx.Module):
-    """Triangle update using outgoing (AF3 Algorithm 12) or incoming (Algorithm 13) edges."""
+    """Triangle multiplicative update using outgoing (AF3 Algorithm 12) or incoming
+    (Algorithm 13) edges."""
 
     norm_in: LayerNorm
-    linear_p: Linear  # Cz -> 2C: the a and b projections, concatenated
-    linear_g: Linear  # Cz -> 2C: their gates
+    linear_p: Linear  # Cz -> 2C, the a and b projections concatenated
+    linear_g: Linear  # Cz -> 2C, the gates for a and b
     norm_out: LayerNorm
     linear_out: Linear
     linear_out_g: Linear
@@ -51,13 +49,8 @@ class TriangleMultiplication(eqx.Module):
 
 
 class TriangleAttention(eqx.Module):
-    """Triangle attention around the starting node (AF3 Algorithm 14): each row attends
-    along itself, biased by the pair. Applied to the transposed pair it is the
-    ending-node version (Algorithm 15).
-
-    With `chunk_size` the rows run in blocks of that many, one block at a time, so the
-    attention maps are `[chunk_size, heads, T, T]` instead of `[T, heads, T, T]`. Each
-    block is rematerialized on the backward pass."""
+    """Triangle attention around the starting node (AF3 Algorithm 14), or the ending node
+    on the transposed pair, run in blocks of `chunk_size` rows if set to save memory."""
 
     norm: LayerNorm
     linear_bias: Linear  # Cz -> heads
@@ -68,12 +61,12 @@ class TriangleAttention(eqx.Module):
         self, z: Float[Array, "T T Cz"], pair_mask: Bool[Array, "T T"]
     ) -> Float[Array, "T T Cz"]:
         z = self.norm(z)
-        bias = jnp.moveaxis(self.linear_bias(z), -1, 0)  # [heads, T, T], shared by rows
+        bias = jnp.moveaxis(self.linear_bias(z), -1, 0)  # [heads, T, T], shared by all rows
         if self.chunk_size is None:
             return jax.vmap(lambda row, m: self.attention(row, row, bias, m))(z, pair_mask)
         num_rows = z.shape[0]
         size = min(self.chunk_size, num_rows)
-        padding = -num_rows % size  # rows of zeros that attend to nothing, then dropped
+        padding = -num_rows % size  # padded rows are fully masked and dropped afterwards
         blocks = lambda x: jnp.pad(x, [(0, padding)] + [(0, 0)] * (x.ndim - 1)).reshape(
             -1, size, *x.shape[1:]
         )
@@ -95,8 +88,8 @@ def _attend_rows(
 
 
 def with_triangle_chunks[M](model: M, chunk_size: int | None) -> M:
-    """`model` with every `TriangleAttention` in it running `chunk_size` rows at a time
-    (None: all rows at once). Slower, with less memory, also under `grad`."""
+    """Return `model` with every `TriangleAttention` running `chunk_size` rows at a time,
+    or all at once if None."""
     is_attention = lambda x: isinstance(x, TriangleAttention)
     return jax.tree.map(
         lambda x: dataclasses.replace(x, chunk_size=chunk_size) if is_attention(x) else x,
@@ -106,7 +99,7 @@ def with_triangle_chunks[M](model: M, chunk_size: int | None) -> M:
 
 
 class AttentionPairBias(eqx.Module):
-    """Single-track self-attention biased by the pair (AF3 Algorithm 24, unconditioned)."""
+    """Self-attention on the single with pair bias (unconditioned AF3 Algorithm 24)."""
 
     norm_s: LayerNorm
     pair_bias: PairBias
@@ -127,11 +120,11 @@ class AttentionPairBias(eqx.Module):
 
 
 class SingleUpdate(eqx.Module):
-    """The single-track half of a block: attention biased by the pair, then a transition."""
+    """Update the single with attention biased by the pair, followed by a transition."""
 
     attention: AttentionPairBias
     transition: Transition
-    post_norm: LayerNorm | Identity = eqx.field(default_factory=Identity)  # Boltz-2's
+    post_norm: LayerNorm | Identity = eqx.field(default_factory=Identity)
 
     def __call__(
         self,
@@ -146,10 +139,8 @@ class SingleUpdate(eqx.Module):
 
 
 class PairformerLayer(eqx.Module):
-    """One Pairformer block (AF3 Algorithm 17). Without `single` (MSA and template
-    stacks) the single track passes through unchanged. Dropout acts on the triangle
-    updates: `dropout_row` on the multiplications and the starting-node attention,
-    `dropout_column` on the ending-node attention."""
+    """One Pairformer block (AF3 Algorithm 17), which returns the single unchanged if
+    `single` is None."""
 
     tri_mul_out: TriangleMultiplication
     tri_mul_in: TriangleMultiplication
@@ -181,7 +172,7 @@ class PairformerLayer(eqx.Module):
 
 
 class PairMixerLayer(eqx.Module):
-    """A PairMixer block: a Pairformer block without triangle attention."""
+    """A PairMixer block, which is a Pairformer block without triangle attention."""
 
     tri_mul_out: TriangleMultiplication
     tri_mul_in: TriangleMultiplication
@@ -207,8 +198,7 @@ class PairMixerLayer(eqx.Module):
 
 
 class AbstractPairformer(eqx.Module):
-    """A trunk's pair stack: single and pair in, single and pair out (`PairformerStack`,
-    or a model's own, e.g. Mol-1's)."""
+    """A trunk's pair stack, which updates the single and the pair."""
 
     @abc.abstractmethod
     def __call__(
@@ -222,8 +212,7 @@ class AbstractPairformer(eqx.Module):
 
 
 class PairformerStack(AbstractPairformer):
-    """Identical layers (`PairformerLayer`s or `PairMixerLayer`s), stacked along a leading
-    axis and scanned."""
+    """Identical `PairformerLayer`s or `PairMixerLayer`s, stacked and scanned."""
 
     layers: PairformerLayer | PairMixerLayer
 

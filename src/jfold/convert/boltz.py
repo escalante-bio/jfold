@@ -1,5 +1,4 @@
-"""Boltz-lineage modules: Boltz-2 (`boltz.model.layers`) and ProMERA (`promera.model`),
-which share Boltz-1's layer code."""
+"""Convert Boltz-lineage blocks, shared by Boltz-2 and ProMERA."""
 
 import jax.numpy as jnp
 import torch
@@ -73,7 +72,7 @@ def triangle_multiplication(m, *, outgoing: bool) -> TriangleMultiplication:
 
 
 def triangle_attention(m, *, starting: bool) -> TriangleAttention:
-    # The ending-node module transposes internally; jfold's layer transposes around it.
+    # The ending-node module transposes internally, and jfold's layer transposes around it.
     if bool(m.starting) != starting:
         raise ValueError(f"expected starting={starting}, got {m.starting}")
     return TriangleAttention(
@@ -91,7 +90,6 @@ def transition(m) -> Transition:
 
 
 def _pair_bias(m) -> PairBias:
-    """`Sequential(LayerNorm, Linear[, Rearrange])` projecting the pair to per-head biases."""
     return PairBias(norm=layer_norm(m[0]), linear=linear(m[1]))
 
 
@@ -106,11 +104,11 @@ def attention_pair_bias(m, norm_s) -> AttentionPairBias:
 
 
 def single_update(m) -> SingleUpdate | None:
-    """The single-track half of a layer; None for ProMERA's pair-only layers."""
+    """Convert a layer's single update, or return None for ProMERA's pair-only layers."""
     attn = getattr(m, "attention", None)
     if attn is None:
         return None
-    if hasattr(m, "pre_norm_s"):  # Boltz-2 normalizes outside the attention
+    if hasattr(m, "pre_norm_s"):  # Boltz-2 applies the norm outside the attention
         norm_s = m.pre_norm_s
         post_norm = m.s_post_norm
     elif attn.initial_norm:
@@ -127,7 +125,7 @@ def single_update(m) -> SingleUpdate | None:
 
 
 def pairformer_layer(m) -> PairformerLayer:
-    """A `PairformerLayer`: Boltz-2's (`v2=True`) or Boltz-1's, as ProMERA uses."""
+    """Convert a Boltz-2 or Boltz-1 Pairformer layer. ProMERA uses Boltz-1's."""
     m = getattr(m, "_checkpoint_wrapped_module", m)
     return PairformerLayer(
         tri_mul_out=triangle_multiplication(m.tri_mul_out, outgoing=True),
@@ -142,7 +140,7 @@ def pairformer_layer(m) -> PairformerLayer:
 
 
 def pairformer_stack(m) -> PairformerStack:
-    """`PairformerModule` of Boltz-2 or ProMERA."""
+    """Convert Boltz-2's or ProMERA's `PairformerModule`."""
     return PairformerStack(layers=stack([pairformer_layer(layer) for layer in m.layers]))
 
 
@@ -156,7 +154,7 @@ def adaln(m) -> AdaLN:
 
 
 def conditioned_transition(m) -> ConditionedTransition:
-    # `swish_gate` is one linear producing [x | gates], then `silu(gates) * x`.
+    # `swish_gate` is one linear producing `[x | gates]`, followed by `silu(gates) * x`.
     x, gates = m.swish_gate[0].weight.chunk(2)
     return ConditionedTransition(
         adaln=adaln(m.adaln),
@@ -193,9 +191,8 @@ def diffusion_transformer_layer(m) -> DiffusionTransformerLayer:
 
 
 def diffusion_transformer(m, proj_z=None, pair_bias=None) -> DiffusionTransformer:
-    """`DiffusionTransformer`. Boltz-2 keeps each layer's pair-bias projection outside the
-    transformer (its conditioning's `token_trans_proj_z`), passed as `proj_z`; ProMERA keeps
-    it in each layer's attention."""
+    """Convert a `DiffusionTransformer`, taking Boltz-2's pair-bias projections from its
+    conditioning as `proj_z`."""
     layers = [getattr(layer, "_checkpoint_wrapped_module", layer) for layer in m.layers]
     if pair_bias is None:
         if proj_z is None:
@@ -208,25 +205,18 @@ def diffusion_transformer(m, proj_z=None, pair_bias=None) -> DiffusionTransforme
 
 
 def atom_transformer(m, proj_z=None, pair_bias=None) -> DiffusionTransformer:
-    """`AtomTransformer`: the diffusion transformer within atom windows. Boltz-2 keeps the
-    layers' pair-bias projections in its conditioning (`atom_enc_proj_z` or
-    `atom_dec_proj_z`), passed as `proj_z`."""
+    """Convert an `AtomTransformer`, taking Boltz-2's pair-bias projections as `proj_z`."""
     windows = CenteredWindows(queries=m.attn_window_queries, keys=m.attn_window_keys)
     return localize(diffusion_transformer(m.diffusion_transformer, proj_z, pair_bias), windows)
 
 
 def _relu_mlp(m) -> ReluMLP:
-    """`Sequential(ReLU, Linear, ReLU, Linear, ...)`."""
     return ReluMLP(layers=tuple(linear(layer) for layer in m if isinstance(layer, torch.nn.Linear)))
 
 
 def atom_encoder(features, encoder=None, proj_z=None, pair_bias=None) -> AtomAttentionEncoder:
-    """The atom attention encoder. Boltz-2 splits it into `AtomEncoder` (`features`: atom
-    and pair embedding, trunk conditioning) and `AtomAttentionEncoder` (`encoder`: noisy
-    positions, transformer, aggregation), with the transformer's pair-bias projections in
-    its conditioning (`atom_enc_proj_z`); ProMERA keeps all of it in one module.
-    Features come from `jfold.models.boltz2.atom_features` or
-    `jfold.models.promera.atom_features`."""
+    """Convert the atom attention encoder, which Boltz-2 splits into `features`
+    (`AtomEncoder`) and `encoder` (`AtomAttentionEncoder`)."""
     encoder = features if encoder is None else encoder
     trunk = None
     if features.structure_prediction:
@@ -239,7 +229,7 @@ def atom_encoder(features, encoder=None, proj_z=None, pair_bias=None) -> AtomAtt
     return AtomAttentionEncoder(
         embed_features=linear(features.embed_atom_features),
         pair_embedding=AtomPairEmbedding(
-            linear_offset=negated_input(features.embed_atompair_ref_pos),  # Boltz: key - query
+            linear_offset=negated_input(features.embed_atompair_ref_pos),  # upstream is key - query
             linear_inv_sq_dist=linear(features.embed_atompair_ref_dist),
             linear_valid=linear(features.embed_atompair_mask),
         ),
@@ -254,7 +244,8 @@ def atom_encoder(features, encoder=None, proj_z=None, pair_bias=None) -> AtomAtt
 
 
 def atom_decoder(m, proj_z=None) -> AtomAttentionDecoder:
-    """`AtomAttentionDecoder` (Boltz-2's pair-bias projections: `atom_dec_proj_z`)."""
+    """Convert an `AtomAttentionDecoder`, taking Boltz-2's pair-bias projections as
+    `proj_z`."""
     update = m.atom_feat_to_atom_pos_update
     norm_out, linear_out = (
         (update[0], update[1]) if isinstance(update, torch.nn.Sequential) else (None, update)
@@ -268,11 +259,8 @@ def atom_decoder(m, proj_z=None) -> AtomAttentionDecoder:
 
 
 def diffusion_module(module, conditioning=None) -> DiffusionModule:
-    """The diffusion module (`DiffusionModule`, the score model). Boltz-2 moves the pair
-    conditioning, atom features and every transformer's pair-bias projections into a
-    separate `DiffusionConditioning` (`conditioning`); ProMERA keeps them in `module`. It
-    reads the relative position features as they come (the whole model gives it the
-    trunk's encoding)."""
+    """Convert the score model, taking Boltz-2's separate `DiffusionConditioning` as
+    `conditioning`."""
     single = module.single_conditioner
     pair = (module if conditioning is None else conditioning).pairwise_conditioner
     fourier = single.fourier_embed.proj
@@ -332,8 +320,7 @@ def outer_product_mean(m) -> OuterProductMean:
 
 
 def msa_layer(m) -> MSALayer:
-    """`MSALayer` of Boltz-2 (with a pair-only `pairformer_layer`) or ProMERA (with the
-    pair updates inline)."""
+    """Convert Boltz-2's or ProMERA's `MSALayer`."""
     if hasattr(m, "pairformer_layer"):
         pair = pairformer_layer(m.pairformer_layer)
     else:
@@ -360,10 +347,7 @@ def msa_layer(m) -> MSALayer:
 
 
 def msa_module(m, *, max_rows: int | None = DEFAULT_MAX_ROWS) -> MSAModule:
-    """`MSAModule` of Boltz-2 or ProMERA, drawing `max_rows` rows per pass, the query like
-    any other (Boltz-2's `num_subsampled_msa`, ProMERA's `msas_per_trunk_iter`; None: every
-    row). Features come from `jfold.models.boltz2.msa_features` or
-    `jfold.models.promera.msa_features`."""
+    """Convert Boltz-2's or ProMERA's `MSAModule`, drawing `max_rows` rows per pass."""
     layers = [getattr(layer, "_checkpoint_wrapped_module", layer) for layer in m.layers]
     return MSAModule(
         linear_msa=linear(m.msa_proj),
@@ -375,8 +359,7 @@ def msa_module(m, *, max_rows: int | None = DEFAULT_MAX_ROWS) -> MSAModule:
 
 
 def template_embedder(m) -> TemplateEmbedder:
-    """Boltz-2's `TemplateV2Module`. Features come from
-    `jfold.models.boltz2.template_features`."""
+    """Convert Boltz-2's `TemplateV2Module`."""
     return TemplateEmbedder(
         norm_z=layer_norm(m.z_norm),
         linear_z=linear(m.z_proj),
@@ -391,8 +374,6 @@ def template_embedder(m) -> TemplateEmbedder:
 
 
 def _pair_head(m, name, *, norm, symmetric=False):
-    """A PAE or PDE head: `to_{name}_logits`, or Boltz-2's separate intra- and inter-chain
-    heads."""
     if hasattr(m, f"to_{name}_intra_logits"):
         return PairHead(
             linear=linear(getattr(m, f"to_{name}_intra_logits")),
@@ -404,7 +385,6 @@ def _pair_head(m, name, *, norm, symmetric=False):
 
 
 def _per_token_or_atom(linear_module, *, token_level: bool, max_atoms: int, norm):
-    """Token-level logits, or atom-level ones packed as `max_atoms` × bins outputs."""
     if token_level:
         return TokenHead(linear=linear(linear_module), norm=norm)
     w = array(linear_module.weight).reshape(max_atoms, linear_module.out_features // max_atoms, -1)
@@ -412,10 +392,9 @@ def _per_token_or_atom(linear_module, *, token_level: bool, max_atoms: int, norm
 
 
 def confidence_module(m) -> ConfidenceModule:
-    """`ConfidenceModule` of Boltz-2 or ProMERA. Boltz-2's relative-position, bond and
-    contact pair features are `pair_features` for `ConfidenceModule.__call__`."""
+    """Convert Boltz-2's or ProMERA's `ConfidenceModule`."""
     heads = m.confidence_heads
-    protenix_norms = getattr(heads, "_protenix", False)  # ProMERA option: normalized heads
+    protenix_norms = getattr(heads, "_protenix", False)  # ProMERA option to norm heads
     norm = (
         (lambda name: layer_norm(getattr(heads, name)))
         if protenix_norms
@@ -458,19 +437,16 @@ def confidence_module(m) -> ConfidenceModule:
 
 
 def distogram_head(m) -> PairHead:
-    """`DistogramModule` (one distogram)."""
+    """Convert a `DistogramModule` with a single distogram."""
     return PairHead(linear=linear(m.distogram), symmetric=True)
 
 
 def relative_positions(m) -> Linear:
-    """The relative position encoding's projection of
-    `jfold.blocks.inputs.relative_position_features`."""
+    """Convert the relative position encoding's projection."""
     return linear(m.linear_layer)
 
 
 def _split_pair_bias(m, depth: int) -> PairBias:
-    """One `Sequential(LayerNorm, Linear)` producing every layer's heads, split into a
-    stacked per-layer `PairBias`."""
     w = array(m[1].weight)
     heads = w.shape[0] // depth
     norm = layer_norm(m[0])
@@ -483,9 +459,7 @@ def _split_pair_bias(m, depth: int) -> PairBias:
 
 
 def input_embedder(m) -> InputEmbedder:
-    """`InputEmbedder` of Boltz-2 (token features projected and added; from
-    `jfold.models.boltz2.token_features`) or ProMERA (concatenated; from
-    `jfold.models.promera.token_features`)."""
+    """Convert Boltz-2's or ProMERA's `InputEmbedder`."""
     if not hasattr(m, "res_type_encoding"):  # ProMERA
         return InputEmbedder(encoder=atom_encoder(m.atom_attention_encoder))
     depth = len(m.atom_attention_encoder.atom_encoder.diffusion_transformer.layers)

@@ -1,21 +1,9 @@
-"""Noise schedules, built on the host as static float32 arrays of sigmas.
+"""Noise schedules, computed on the host as float32 NumPy arrays of sigmas.
 
-A `Schedule` maps a time grid `t ∈ [0, 1]` to sigmas, from `sigma_data * s_max`
-at `t=0` to `sigma_data * s_min` at `t=1`:
-
-- `Karras(rho)`: `sigma_data * (s_max^(1/rho) + t * (s_min^(1/rho) - s_max^(1/rho)))^rho`,
-  the schedule AF3-class models are trained with.
-- `Geometric()`: evenly spaced in log sigma; suits few-step sampling
-  (Blitz, arXiv:2610.23703).
-
-Models differ in the grid (`np.linspace`, optionally warped by BoltzGen's
-`dilate`) and in how the schedule ends:
-
-- `append_zero(schedule(np.linspace(0, 1, n)))`: EDM / Boltz.
-- `zero_last(schedule(np.linspace(0, 1, n + 1)))`: the AF3 paper.
-- `schedule(np.linspace(0, 1, n + 1))`: end at `sigma_data * s_min`.
-
-`cap` (ESMFold2) drops the high-noise steps.
+A `Schedule` maps times `t` in [0, 1] to sigmas from `sigma_data * s_max` down to
+`sigma_data * s_min`. `Karras(rho)` is the schedule AF3-class models train with, and
+`Geometric()`, evenly spaced in log sigma, suits few-step sampling (Blitz, arXiv:2610.23703).
+`append_zero`, `zero_last` and `cap` change how a schedule ends or starts.
 """
 
 from dataclasses import dataclass
@@ -62,7 +50,7 @@ class Geometric:
 
 
 def append_zero(sigmas: np.ndarray) -> np.ndarray:
-    """End with an extra final step to sigma 0 (EDM)."""
+    """Append a final sigma of 0 (EDM)."""
     return np.append(sigmas, 0.0).astype(np.float32)
 
 
@@ -72,7 +60,8 @@ def zero_last(sigmas: np.ndarray) -> np.ndarray:
 
 
 def dilate(t: np.ndarray, *, start: float, end: float, dilation: float) -> np.ndarray:
-    """Piecewise-linear time warp spending `dilation`x more of the grid on [start, end]."""
+    """Warp `t` piecewise-linearly so that `dilation` times more of the grid falls in
+    [start, end]."""
     width, lower, upper = end - start, start, 1 - end
     assert (dilation - 1) * width <= lower + upper, "dilation too large"
     ratio = (lower + upper + (1 - dilation) * width) / (lower + upper)
@@ -85,6 +74,6 @@ def dilate(t: np.ndarray, *, start: float, end: float, dilation: float) -> np.nd
 
 
 def cap(sigmas: np.ndarray, max_sigma: float) -> np.ndarray:
-    """Drop sigmas above `max_sigma` and start from it; the step count is whatever
-    survives."""
+    """Drop the sigmas above `max_sigma` and start at `max_sigma`, which can shorten the
+    schedule."""
     return np.concatenate([[max_sigma], sigmas[sigmas <= max_sigma]]).astype(np.float32)

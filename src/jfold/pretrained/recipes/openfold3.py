@@ -1,4 +1,4 @@
-"""OpenFold3 (`of3-p2-155k.pt`), as `run_openfold predict` loads it."""
+"""OpenFold3 (`of3-p2-155k.pt`), loaded as `run_openfold predict` does."""
 
 from pathlib import Path
 
@@ -6,7 +6,7 @@ import equinox as eqx
 
 from jfold.pretrained import Release
 
-# OpenFold3's default checkpoint (`DEFAULT_CHECKPOINT_NAME` in its parameter registry).
+# OpenFold3's default checkpoint, `DEFAULT_CHECKPOINT_NAME` in its parameter registry.
 FILENAME = "of3-p2-155k.pt"
 
 
@@ -20,10 +20,8 @@ def _fetch(directory: Path) -> None:
 
 
 def _build(checkpoint: Path):
-    """As `run_openfold predict` loads it: the `predict` and `pae_enabled` presets and the
-    EMA weights (no DeepSpeed attention kernel: the converter reads plain torch modules).
-    The checkpoint has no version tensor; upstream then loads non-strictly, which is
-    loading strictly with the model's own."""
+    """Load as `run_openfold predict` does, adding the version tensor the checkpoint lacks so
+    loading can be strict."""
     from jopenfold3._vendor.openfold3.core.utils.checkpoint_loading_utils import (
         get_state_dict_from_checkpoint,
         load_checkpoint,
@@ -55,7 +53,7 @@ def _convert(model) -> eqx.Module:
 
 RELEASES = {
     "openfold3": Release(
-        upstream="jopenfold3",  # vendors openfold3
+        upstream="jopenfold3",  # Vendors openfold3.
         source="openfold3 download_model_parameters (of3-p2-155k.pt), EMA weights",
         filename=FILENAME,
         fetch=_fetch,

@@ -1,9 +1,4 @@
-"""a3m parsing shared by the views: aligned (match) columns and insertion counts.
-
-Lowercase letters are insertions relative to the query; every other character is an
-aligned column (`-` a gap). Each row's insertions are counted onto the next aligned column;
-insertions after the last aligned column are dropped. How characters map to residue
-classes, and which rows are kept, are each view's rules."""
+"""Parse a3m alignments into aligned columns and per-column insertion counts."""
 
 from dataclasses import dataclass
 
@@ -12,8 +7,8 @@ import numpy as np
 
 @dataclass(frozen=True)
 class A3M:
-    """`rows[i]`: row i's aligned columns, as written (uppercase, `-`, `.`); `deletions[i]`:
-    the insertion count before each column; `headers[i]`: its header line, without `>`."""
+    """A parsed a3m alignment, where `deletions[i]` counts the insertions before each column
+    of row i."""
 
     rows: tuple[str, ...]
     deletions: np.ndarray  # [S, L] int
@@ -21,8 +16,7 @@ class A3M:
 
 
 def parse_a3m(text: str) -> A3M:
-    """FASTA records (sequences may wrap over lines); every row must have as many aligned
-    columns as the first (the query)."""
+    """Parse a3m text whose rows all have as many aligned columns as the query."""
     headers, sequences = [], []
     for line in text.splitlines():
         line = line.strip()

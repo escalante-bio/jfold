@@ -1,5 +1,4 @@
-"""BioEmu2 parity against the upstream PyTorch implementation (`bioemu2.biomoa`), with random
-weights: trunk blocks, transformer layers, the input embedder and the structure module."""
+"""Test BioEmu2 against the upstream PyTorch implementation (`bioemu2.biomoa`)."""
 
 import dataclasses
 
@@ -38,9 +37,8 @@ t = torch.from_numpy
 
 @dataclasses.dataclass
 class System:
-    """A random system's raw inputs (numpy, unbatched)."""
+    """A random system's raw inputs as unbatched numpy arrays."""
 
-    # tokens
     asym_id: np.ndarray
     entity_id: np.ndarray
     residue_index: np.ndarray
@@ -54,12 +52,10 @@ class System:
     token_bonds: np.ndarray
     contacts: np.ndarray
     contact_threshold: np.ndarray
-    # MSA
     msa: np.ndarray
     has_deletion: np.ndarray
     deletion_value: np.ndarray
     paired: np.ndarray
-    # atoms
     atom_to_token: np.ndarray
     ref_pos: np.ndarray
     charge: np.ndarray
@@ -67,7 +63,6 @@ class System:
     name_chars: np.ndarray
     ref_space_uid: np.ndarray
     coordinate_mask: np.ndarray
-    # trunk outputs and per-step inputs
     s_inputs: np.ndarray
     s_trunk: np.ndarray
     z_trunk: np.ndarray
@@ -128,8 +123,7 @@ def make_system(num_tokens, num_atoms, seed) -> System:
 
 
 def padded(x: System, tokens: int, atoms: int) -> System:
-    """`x` with `tokens` garbage tokens and `atoms` garbage atoms appended (garbage atoms
-    belong to random tokens; garbage tokens' center atoms are random atoms)."""
+    """Append `tokens` garbage tokens and `atoms` garbage atoms to `x`."""
     if not (tokens or atoms):
         return x
     n, a = x.num_tokens, x.num_atoms
@@ -202,7 +196,7 @@ def _features(x: System) -> tuple[Features, bioemu2_model.Conditioning]:
 
 
 def _torch_feats(x: System) -> dict:
-    """The upstream's feature dict, batched."""
+    """Return the upstream's batched feature dict."""
     n, s = x.num_tokens, NUM_ROWS
     feats = {
         "asym_id": t(x.asym_id),
@@ -233,9 +227,6 @@ def _torch_feats(x: System) -> dict:
     return {k: v[None] for k, v in feats.items()}
 
 
-# Trunk -----------------------------------------------------------------------------------------
-
-
 def _sequence_embedder(**kwargs):
     from bioemu2.biomoa.modules.pairmixer import PairMixerSequenceEmbedder
 
@@ -263,9 +254,7 @@ def _trunk(init, trunk, features, conditioning, s_inputs, num_iterations):
 @pytest.mark.parametrize("padding", [(0, 0), (3, 5)], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("method_pairs", [False, True], ids=["method-single", "method-pair"])
 def test_trunk_matches_reference(method_pairs, padding):
-    """`PairMixerSequenceEmbedder` (initial single and pair with method and contact
-    conditioning, then two recycling iterations of the MSA module and PairMixer stack) and
-    its unconditional branch, on the shared `TrunkInit` and `Trunk`."""
+    """Check `PairMixerSequenceEmbedder` and its unconditional branch against jfold's trunk."""
     module = randomize(
         _sequence_embedder(embed_method_into_pairs=method_pairs, use_unconditional_branch=True),
         seed=0,
@@ -297,7 +286,7 @@ def test_trunk_matches_reference(method_pairs, padding):
 
 
 def test_relative_positions_match_reference():
-    """`FusedRelativePositionEncoder` as a linear on the shared relative position features."""
+    """Check `FusedRelativePositionEncoder` as a linear map on the shared relative positions."""
     from bioemu2.biomoa.modules.relative_position_encoder import FusedRelativePositionEncoder
 
     module = randomize(FusedRelativePositionEncoder(token_z=C_Z, r_max=3, s_max=1), seed=0)
@@ -330,9 +319,6 @@ def test_distogram_matches_reference():
     assert rel_err(bioemu2.distogram(module)(jnp.array(z)), ref[0]) < 1e-6
 
 
-# Transformer layers ------------------------------------------------------------------------------
-
-
 @eqx.filter_jit
 def _transformer(transformer, a, s, pair, mask):
     return transformer(a, s, transformer.pair_biases(pair), mask)
@@ -341,7 +327,7 @@ def _transformer(transformer, a, s, pair, mask):
 @pytest.mark.parametrize("padding", [0, 3], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("lns_scale", [1.0, 0.5])
 def test_conditioned_transformer_matches_reference(lns_scale, padding):
-    """Token `ConditionedTransformerLayer`s (adaLN-Zero) as a shared `DiffusionTransformer`."""
+    """Check `ConditionedTransformerLayer`s (adaLN-Zero) as a shared `DiffusionTransformer`."""
     from bioemu2.biomoa.modules.transformer import ConditionedTransformerLayer
 
     layers = torch.nn.ModuleList(
@@ -382,7 +368,7 @@ def test_conditioned_transformer_matches_reference(lns_scale, padding):
 
 @pytest.mark.parametrize("padding", [(0, 0), (3, 5)], ids=["unpadded", "padded"])
 def test_input_embedder_matches_reference(padding):
-    """`InputEmbedder` (its atom encoder in sliding windows) as the shared `InputEmbedder`."""
+    """Check `InputEmbedder` and its sliding-window atom encoder as the shared one."""
     from bioemu2.biomoa.modules.embedders import InputEmbedder
 
     module = randomize(
@@ -430,9 +416,6 @@ def test_input_embedder_matches_reference(padding):
         ].sum()
     )(features.atoms.ref_pos)
     assert_finite((out, grads))
-
-
-# Structure module --------------------------------------------------------------------------------
 
 
 def _structure_module(dynamics, downscale):
@@ -485,8 +468,7 @@ CONDITIONING = {
 @pytest.mark.parametrize("padding", [(0, 0), (3, 5)], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("case", CONDITIONING)
 def test_structure_module_matches_reference(case, padding):
-    """One denoising step of `DualStreamDiffusionModule`, with LayerNorm scaling, with and
-    without dynamics conditioning (on and off)."""
+    """Check one denoising step of `DualStreamDiffusionModule` with LayerNorm scaling."""
     use_dynamics, downscale, conditioned = CONDITIONING[case]
     module = randomize(_structure_module(use_dynamics, downscale), seed=0)
     x = make_system(NUM_TOKENS, NUM_ATOMS, seed=1)
@@ -551,16 +533,13 @@ def test_lag_embedding_matches_reference():
         assert rel_err(ours(jnp.array(lag)), ref) < 1e-6
 
 
-# Released weights ------------------------------------------------------------------------------
-
 SEQUENCES = ("MKTAYIAKQRQISFVKSHFSRQ", "GSHMLEDPV")
 NUM_RECYCLES = 1
 
 
 @pytest.mark.checkpoint
 def test_bioemu2_preview():
-    """The released `bioemu2-preview` on a small complex: the trunk with one recycle, the
-    distogram, and one denoising step from the reference trunk. Downloads weights."""
+    """Check the released `bioemu2-preview` on a small complex."""
     from bioemu2.biomoa.ops.triangle_multiplication import (
         TriangleMultiplicationCueq,
         TriangleMultiplicationFull,
@@ -578,7 +557,7 @@ def test_bioemu2_preview():
     reference = pretrained.upstream(
         "bioemu2", checkpoint_path=get_checkpoint_files(CHECKPOINT).checkpoint_path
     )
-    for m in reference.modules():  # the cuequivariance kernels need CUDA; same weights and math
+    for m in reference.modules():  # replace the CUDA-only cuequivariance kernels with the same math
         if isinstance(m, TriangleMultiplicationCueq):
             m.__class__ = TriangleMultiplicationFull
 
@@ -625,7 +604,7 @@ def test_bioemu2_preview():
     assert rel_err(state.z, trunk.pair[0]) < 1e-5
     assert rel_err(model.distogram(state.z), trunk.distogram[0]) < 1e-5
 
-    # The structure module from the reference trunk, so errors do not compound.
+    # Run the structure module from the reference trunk so errors do not compound.
     ref_state = TrunkState(s=jnp.array(trunk.single[0].numpy()), z=jnp.array(trunk.pair[0].numpy()))
     ref_inputs = TrunkInputs(
         s_inputs=jnp.array(trunk.s_inputs[0].numpy()), s_init=inputs.s_init, z_init=inputs.z_init

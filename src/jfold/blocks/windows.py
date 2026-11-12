@@ -1,10 +1,5 @@
-"""Sequence-local attention for atoms (AF3 Algorithm 7): atoms are split into query blocks
-of `queries` atoms, each attending to `keys` atoms around the block's center.
-
-Windowed tensors have a leading block axis: queries `[NW, queries, ...]`, keys
-`[NW, keys, ...]`, and atom-pair tensors `[NW, queries, keys, ...]` with
-`NW = ceil(N / queries)`. The models differ only in where a block's keys sit near the
-ends of the sequence."""
+"""Sequence-local atom attention of AF3 Algorithm 7, where blocks of `queries` atoms
+attend to `keys` atoms around them."""
 
 import abc
 
@@ -24,27 +19,24 @@ class Windows(eqx.Module):
     def key_index(
         self, mask: Bool[Array, " N"]
     ) -> tuple[Int[Array, "NW keys"], Bool[Array, "NW keys"]]:
-        """Each block's key atoms (in range) and which of them are real."""
+        """Return each block's key atom indices and a mask of the real ones."""
 
     def num_blocks(self, num_atoms: int) -> int:
         return -(-num_atoms // self.queries)
 
     def query_blocks(self, x: Float[Array, "N ..."]) -> Float[Array, "NW queries ..."]:
-        """Per-atom values in query blocks (zero past the last atom)."""
+        """Split per-atom values into query blocks, zero-padded past the last atom."""
         num_blocks = self.num_blocks(x.shape[0])
         x = jnp.pad(x, [(0, num_blocks * self.queries - x.shape[0])] + [(0, 0)] * (x.ndim - 1))
         return x.reshape(num_blocks, self.queries, *x.shape[1:])
 
     def _centered(self, num_atoms: int) -> Int[Array, "NW keys"]:
-        """Keys centered on each query block: block `b` sees atoms
-        `b * queries - (keys - queries) / 2 + j` for `j < keys`."""
         start = jnp.arange(self.num_blocks(num_atoms)) * self.queries
         return start[:, None] - (self.keys - self.queries) // 2 + jnp.arange(self.keys)
 
 
 class CenteredWindows(Windows):
-    """AF3's windows: always centered on the query block; keys past either end of the
-    sequence are masked."""
+    """AF3's windows, centered on each query block, with out-of-range keys masked."""
 
     queries: int = eqx.field(static=True, default=32)
     keys: int = eqx.field(static=True, default=128)
@@ -57,8 +49,7 @@ class CenteredWindows(Windows):
 
 
 class ShiftedWindows(Windows):
-    """OpenFold3's windows: centered, but a block that would run past either end of the
-    real atoms (the first `mask.sum()`) is shifted back inside them."""
+    """OpenFold3's windows, centered but shifted to stay within the real atoms."""
 
     queries: int = eqx.field(static=True, default=32)
     keys: int = eqx.field(static=True, default=128)
@@ -75,8 +66,7 @@ class ShiftedWindows(Windows):
 
 
 class LocalAttention(eqx.Module):
-    """`Attention` within windows: each query block attends to its key window, biased by
-    the windowed atom pair."""
+    """`Attention` within windows, biased by the windowed atom pair."""
 
     attention: Attention
     windows: Windows

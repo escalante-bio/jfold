@@ -21,8 +21,7 @@ def atom_features(
     atom_is_std: Bool[Array, " N"],
     ref_hydrogens: Int[Array, " N"],
 ) -> Float[Array, "N 397"]:
-    """The atom feature vector ProMERA's encoder embeds: position, charge, mask, element,
-    name characters (standard residues only) and hydrogen count."""
+    """Build the atom feature vector that ProMERA's encoder embeds."""
     name_chars = jax.nn.one_hot(ref_atom_name_chars, 64).reshape(ref_pos.shape[0], -1)
     return jnp.concatenate(
         [
@@ -38,14 +37,12 @@ def atom_features(
 
 
 def token_features(res_type, profile, deletion_mean, is_epitope):
-    """The token feature vector `[T, 70]`: residue-type probabilities `[T, 34]` (one-hot for
-    a fixed sequence), MSA profile, deletion mean, epitope flag."""
+    """Build the token feature vector, with the epitope flag last."""
     return jnp.concatenate([res_type, profile, deletion_mean[:, None], is_epitope[:, None]], -1)
 
 
 class AtomAggregate(eqx.Module):
-    """An atom encoder without transformer layers (ProMERA's input embedder): each token's
-    mean over its atoms of `relu(linear_token(embed_features(atom features)))`."""
+    """ProMERA's input embedder, an atom encoder without transformer layers."""
 
     embed_features: Linear
     linear_token: Linear
@@ -56,8 +53,7 @@ class AtomAggregate(eqx.Module):
 
 
 class PromeraInputEmbedder(AbstractInputEmbedder[Features]):
-    """`s_inputs`: the atom aggregates, kept where `keep_aggregate` holds, concatenated with
-    the token features."""
+    """Compute `s_inputs`, zeroing the atom aggregates where `keep_aggregate` is false."""
 
     encoder: AtomAggregate
 
@@ -69,13 +65,9 @@ class PromeraInputEmbedder(AbstractInputEmbedder[Features]):
 
 
 def features(f: dict) -> Features:
-    """`jfold.model.Features` from a ProMERA feature dict (tinyprot's `AF3Featurizer`
-    output after `promera.inference.utils.finalize_feats`; unbatched, atoms possibly
-    padded as `promera.data.utils.collate` pads them). The atom aggregate is dropped for
-    standard residues, as in the released model (`mask_std_feats`).
-
-    Arrays may be numpy or JAX (traceable: runs inside `jit`). `restype` and `msa` are
-    class indices or probability vectors over the 34 token types (a soft sequence)."""
+    """Build `jfold.model.Features` from a ProMERA feature dict, where `restype` and `msa`
+    may be soft. As in the released model (`mask_std_feats`), the atom aggregate is dropped
+    for standard residues."""
     a = arrays(f)
     num_tokens = a["restype"].shape[0]
     num_atoms = a["ref_pos"].shape[0]

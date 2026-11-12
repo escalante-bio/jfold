@@ -1,4 +1,4 @@
-"""Diffusion transformer parity against each upstream PyTorch implementation."""
+"""Test the diffusion transformer against each upstream PyTorch implementation."""
 
 import equinox as eqx
 import jax
@@ -103,7 +103,7 @@ def _forward(model, a, s, z, mask):
 
 @eqx.filter_jit
 def _input_grads(model, a, s, z, mask, num_real):
-    """Gradients of the real tokens' outputs with respect to every input."""
+    """Return the gradients of the real tokens' outputs with respect to every input."""
 
     def loss(a, s, z):
         return _forward(model, a, s, z, mask)[:num_real].sum()
@@ -114,8 +114,7 @@ def _input_grads(model, a, s, z, mask, num_real):
 @pytest.mark.parametrize("padding", [0, 3], ids=["unpadded", "padded"])
 @pytest.mark.parametrize("case", CASES)
 def test_diffusion_transformer_matches_reference(case, padding):
-    """jfold on inputs with `padding` masked garbage tokens appended matches the upstream
-    on the real tokens alone; outputs and gradients stay finite everywhere."""
+    """Check that jfold matches the upstream on the real tokens with masked garbage appended."""
     module, run_reference, convert = CASES[case]()
     randomize(module, seed=0)
     gen = torch.Generator().manual_seed(1)

@@ -1,32 +1,9 @@
-"""Dump ESMFold2's upstream input features for the shared fixture systems.
+"""Write ESMFold2's upstream features for the test systems to `tests/featurize/data/`.
 
-Run from ~/jfold:
+Each file also holds the ESMC inputs and the input embedder's inputs, recorded
+from upstream code run without weights.
 
     uv run python tools/fixtures/dump_esmfold2.py
-
-For each system in tests/featurize/data/systems.json this writes
-tests/featurize/data/esmfold2_<system>.npz with
-
-* every tensor `ESMFold2InputBuilder.prepare_input` returns, unbatched, in upstream's dtypes;
-* the ESMC token inputs upstream's `compute_lm_hidden_states` builds from them, captured by
-  running that function with a recording stand-in for ESMC (no weights):
-  `lm_input_ids` [Lp], `lm_sequence_id` [Lp] and `lm_positions` [T] (each token's row in
-  the packed ESMC input, -1 off-protein);
-* what the model forward hands its input embedder, captured from the real forward on a
-  weightless (meta-device) model: `embed_res_type` [T, 33], `embed_profile` [T, 33] and
-  `embed_deletion_mean` [T] for the release model (`biohub/ESMFold2`), and
-  `embed_profile_no_msa_features` / `embed_deletion_mean_no_msa_features` for an
-  experimental -Fast checkpoint (`disable_msa_features`, `biohub/ESMFold2-Experimental-Fast`).
-
-`lm_hidden_states` is not included (it needs ESMC's weights).
-
-Featurization of standard-residue proteins draws no random numbers; `prepare_input` is
-called with seed=0, and the script checks that seed=None and another seed give identical
-arrays. The model-time randomness (MSA column masking and row subsampling, ESMC input
-masking, LM dropout) is not part of these features.
-
-The CCD pickle is `biohub/ESMFold2`'s ccd.pkl, resolved through the Hugging Face cache
-unless ESMCFOLD_CCD_PATH is set.
 """
 
 import hashlib
@@ -50,8 +27,6 @@ def chains_for(system: dict):
     for chain in system["chains"]:
         msa = None
         if "msa" in chain:
-            # A precomputed a3m: insertions stripped from the stored sequences, their
-            # counts kept in `MSA.deletions` (identical features either way).
             msa = MSA.from_a3m(str(FIXTURES / chain["msa"]), remove_insertions=True)
         chains.append(ProteinInput(id=chain["id"], sequence=chain["sequence"], msa=msa))
     return chains
@@ -61,7 +36,7 @@ def prepare(builder, system: dict, seed: int | None):
     from esm.utils.structure.input_builder import StructurePredictionInput
 
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # "No MSA provided ..., using single sequence mode"
+        warnings.simplefilter("ignore")  # Silence "No MSA provided" warnings.
         batched, _ = builder.prepare_input(
             StructurePredictionInput(sequences=chains_for(system)), seed=seed
         )
@@ -69,8 +44,7 @@ def prepare(builder, system: dict, seed: int | None):
 
 
 class _RecordingESMC:
-    """Stands in for ESMC in `compute_lm_hidden_states`: records its inputs and returns
-    hidden states that encode each packed position (position + 1)."""
+    """Stand-in for ESMC that records its inputs and returns each packed position plus one."""
 
     def __call__(self, input_ids, sequence_id, output_hidden_states=True):
         self.input_ids, self.sequence_id = input_ids.clone(), sequence_id.clone()
@@ -94,7 +68,7 @@ def lm_inputs(batched) -> dict:
         batched["residue_index"],
         batched["mol_type"],
         batched["token_attention_mask"].bool(),
-        lm_mask_pct=0.0,  # every released config; > 0 masks residues at random
+        lm_mask_pct=0.0,  # As in every released config. Values > 0 mask at random.
     )
     return {
         "lm_input_ids": esmc.input_ids[0].numpy(),
@@ -108,8 +82,8 @@ class _Stop(Exception):
 
 
 def weightless_model(repo: str):
-    """The checkpoint's model class on the meta device, with its input embedder replaced
-    by a recorder that stops the forward."""
+    """Build the model on the meta device, with an input embedder that records its inputs and
+    stops."""
     from esm.models.esmfold2 import EsmFold2ExperimentalModel, EsmFold2Model
     from esm.models.esmfold2.config import EsmFold2Config
     from huggingface_hub import snapshot_download

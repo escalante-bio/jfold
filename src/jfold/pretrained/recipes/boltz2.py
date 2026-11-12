@@ -1,4 +1,4 @@
-"""Boltz-2 (`boltz2_conf.ckpt`), as `boltz predict` loads it."""
+"""Boltz-2 (`boltz2_conf.ckpt`), loaded as `boltz predict` does."""
 
 from dataclasses import asdict
 from pathlib import Path
@@ -15,8 +15,7 @@ def _fetch(directory: Path) -> None:
 
 
 def _build(checkpoint: Path):
-    """As `boltz predict` loads it by default (no kernels: the converter reads plain
-    torch modules)."""
+    """Load as `boltz predict` does, without kernels (the converter reads plain torch)."""
     import boltz.main as bm
     from boltz.model.models.boltz2 import Boltz2
 

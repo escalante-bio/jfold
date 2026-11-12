@@ -1,5 +1,4 @@
-"""`jfold.featurize` views against the upstream featurizations they reproduce, on the shared
-fixture systems (`tests/featurize/data/`, written by `tools/fixtures/dump_<model>.py`)."""
+"""Test `jfold.featurize` views against the upstream featurizations they reproduce."""
 
 import json
 from pathlib import Path
@@ -12,7 +11,7 @@ from jfold.featurize.views import bioemu2
 
 FIXTURES = Path(__file__).parent / "data"
 SYSTEMS = json.loads((FIXTURES / "systems.json").read_text())
-# Systems with templates (`tools/fixtures/make_templates.py`), for the views that take them.
+# Systems with templates, written by `tools/fixtures/make_templates.py`.
 TEMPLATE_SYSTEMS = json.loads((FIXTURES / "template_systems.json").read_text())
 
 
@@ -30,8 +29,7 @@ def system(name: str) -> System:
 
 
 def assert_matches(ours: dict, fixture_path: Path) -> None:
-    """Every key the view produces equals upstream's: integers and flags exactly, floats to
-    float32 rounding."""
+    """Check that every key the view produces equals upstream's."""
     with np.load(fixture_path, allow_pickle=False) as upstream:
         for key, value in ours.items():
             assert key in upstream.files, key
@@ -51,7 +49,7 @@ def test_bioemu2(name):
 
 @pytest.mark.parametrize("name", ["dimer", "dimer_msa"])
 def test_bioemu2_paired_queries(name):
-    """Heteromers with each chain's query as its paired MSA: every chain keeps its rows."""
+    """Check that heteromer chains keep their MSA rows when each paired MSA is just the query."""
     dimer = system("dimer")
     if name == "dimer_msa":
         a3m = (FIXTURES / "chain_A.a3m").read_text()

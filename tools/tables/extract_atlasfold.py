@@ -1,9 +1,4 @@
-"""AtlasFold's residue table (`jfold/featurize/data/atlasfold.npz`) from its residue
-constants (`atlasfold.common.residue_constants`): for each of its 21 residue types (UNK as
-N CA C O CB), the atoms in atom14 order (`residue_atoms`), their elements, no formal charges,
-and the ideal atom14 positions (`restype_atom14_positions`, AlphaFold's rigid-group
-literature values) as the one conformer; `extra/atom37` is each atom's atom37 slot. Needs
-the `atlasfold` package; run once:
+"""Write `jfold/featurize/data/atlasfold.npz` from AtlasFold's residue constants. Run once:
 
     uv run python tools/tables/extract_atlasfold.py
 """

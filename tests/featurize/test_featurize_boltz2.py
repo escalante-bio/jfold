@@ -1,4 +1,4 @@
-"""The Boltz-2 view against upstream's featurization on the shared fixture systems."""
+"""Test the Boltz-2 view against upstream's featurization on the shared fixture systems."""
 
 import jax
 import numpy as np
@@ -17,15 +17,14 @@ def test_boltz2(name):
         np.testing.assert_array_equal(
             boltz2.conformer_ids(len(ours["res_type"])), upstream["ref_conformer_id"]
         )
-    # Unposed: upstream's reference conformers before its torch-RNG motion.
+    # Without a key, the conformers are upstream's before it applies its random rigid motion.
     ours["ref_pos_raw"] = ours.pop("ref_pos")
     assert_matches(ours, fixture)
 
 
 @pytest.mark.parametrize("name", sorted(SYSTEMS))
 def test_boltz2_posed(name):
-    """Each residue posed by a rigid motion, centred before its translation; the last
-    residue as stored."""
+    """Check that a key rotates and translates each residue, leaving the last one as stored."""
     canonical = boltz2.features(system(name))
     posed = boltz2.features(system(name), key=jax.random.key(0))
     for k, v in canonical.items():
@@ -56,7 +55,7 @@ def test_boltz2_model_features():
 
 
 def test_boltz2_template_keys():
-    """With templates, upstream adds the force settings; without, its placeholder row."""
+    """Check that upstream adds the force settings with templates and its placeholder without."""
     templated = boltz2.features(system("dimer_template"))
     plain = boltz2.features(system("dimer"))
     assert set(templated) - set(plain) == {"template_force", "template_force_threshold"}

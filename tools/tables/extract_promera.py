@@ -1,16 +1,6 @@
-"""ProMERA's residue table (`jfold/featurize/data/promera.npz`) from tinyprot's CCD, as
-`tinyprot.feature.AF3Featurizer` reads it for polymer residues (`leaving=False`): heavy
-atoms in CCD order without leaving atoms (so no OXT), their elements, formal charges and
-bonded-hydrogen counts (leaving hydrogens included), and the CCD ideal coordinates centred
-on those atoms. X uses the CCD `UNK` entry (6 atoms). Needs the `tinyprot` package and its
-CCD database (`tinyprot.init.download_pretrained()`); run once:
+"""Write `jfold/featurize/data/promera.npz` from tinyprot's CCD. Run once:
 
     uv run python tools/tables/extract_promera.py
-
-Stored per residue: `conformers` `[1, A, 3]` float32 (the canonical conformer), and in
-`extra`, `ref_hydrogens` `[A]` int64 and `ref_pos` `[A, 3]` float64, the same centred
-coordinates before tinyprot's float32 cast, so that posing them reproduces upstream's
-float64 arithmetic.
 """
 
 import numpy as np

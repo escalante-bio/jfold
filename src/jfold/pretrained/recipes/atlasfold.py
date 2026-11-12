@@ -1,15 +1,8 @@
-"""AtlasFold's Hugging Face checkpoints, as `atlasfold.pretrained.load_model` loads them,
-each converted to a `jfold.model.StructureModel` whose trunk holds its AtlasLM language model
-(`trunk.atlaslm`). AtlasLM-3B (`atlaslm_3b`) is a release of its own, stored once: a folding
-model's copy is saved without it and gets it back on loading.
+"""AtlasFold releases, loaded as `atlasfold.pretrained.load_model` does.
 
-- `atlasfold`: AtlasFold (`SeonghwanSeo/atlasfold-260703`), monomers. Its runner masks 15%
-  of the residues for AtlasLM every pass and samples 20 steps up to 512 residues (30 up
-  to 1024, then 100); `sampling` keeps 20.
-- `atlasfold_m`: AtlasFold-M (`SeonghwanSeo/atlasfold-m-260725`), complexes, with a
-  template module. Its runner masks 20% and samples 200 steps.
-- `atlaslm_3b`: AtlasLM-3B (`SeonghwanSeo/atlaslm-3b-base`), in bfloat16 upstream; its
-  converted weights are those values in float32."""
+`atlasfold` (monomers) and `atlasfold_m` (complexes, with templates) share the AtlasLM-3B
+language model, released once as `atlaslm_3b` and attached at `trunk.atlaslm` on loading.
+"""
 
 from functools import partial
 from pathlib import Path
@@ -18,7 +11,7 @@ import equinox as eqx
 
 from jfold.pretrained import Release
 
-# Upstream's licence (the `atlasfold` package's and the model cards'), which copies carry.
+# The licence of the `atlasfold` package and model cards, saved with converted copies.
 LICENSE = '''MIT License
 
 Copyright (c) 2026 Seonghwan Seo
@@ -49,29 +42,24 @@ REPOS: dict[str, tuple[str, str, bool]] = {
 }
 LM_REPO = ("SeonghwanSeo/atlaslm-3b-base", "weights/atlaslm_3b_base.pth")
 LM = "atlaslm_3b"
-# The runners' settings: AtlasLM's masking rate and the sampling steps.
+# The upstream runners' AtlasLM masking rates and sampling step counts.
 MLM_RATE = {"atlasfold": 0.15, "atlasfold_m": 0.20}
 NUM_STEPS = {"atlasfold": 20, "atlasfold_m": 200}
 
 
 def _fetch(repo: str, filename: str, directory: Path) -> None:
-    """Into the Hugging Face cache (shared with `atlasfold`'s own loading), linked from
-    `directory`."""
     from huggingface_hub import hf_hub_download
 
     (directory / Path(filename).name).symlink_to(hf_hub_download(repo, filename))
 
 
 def _build_lm(checkpoint: Path):
-    """As `AtlasLM.from_pretrained` loads it on the CPU (in float32)."""
     from atlaslm.model import AtlasLM
 
     return AtlasLM.from_pretrained(checkpoint, device="cpu")
 
 
 def _build(multimer: bool, checkpoint: Path):
-    """As `load_model` builds it, on the CPU in float32, with AtlasLM-3B from its own
-    release's checkpoint (`jfold.pretrained.checkpoint`)."""
     import copy
 
     from atlasfold.configs.atlasfold import monomer_config
@@ -88,7 +76,6 @@ def _build(multimer: bool, checkpoint: Path):
 
 
 def _convert(name: str, m) -> eqx.Module:
-    """The folding model, without AtlasLM."""
     from atlasfold.model.network.diffusion_head import SamplingConfig
 
     from jfold.convert import atlasfold as convert
@@ -105,7 +92,6 @@ def _convert_lm(m) -> eqx.Module:
 
 
 def _detach_lm(model: eqx.Module) -> eqx.Module:
-    """`model` without its AtlasLM, as its copy is stored."""
     return eqx.tree_at(lambda m: m.trunk.atlaslm, model, None, is_leaf=lambda x: x is None)
 
 

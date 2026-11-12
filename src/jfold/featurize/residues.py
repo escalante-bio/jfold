@@ -1,6 +1,5 @@
-"""Per-pipeline residue tables: each residue's atoms (names, elements, formal charges) and
-reference conformers, extracted once from an upstream package (`tools/tables/`) and
-stored in `jfold/featurize/data/<table>.npz`, so featurization needs no upstream code."""
+"""Residue tables of atoms and reference conformers for each upstream pipeline, extracted by
+`tools/tables/` so featurization needs no upstream code."""
 
 import functools
 from collections.abc import Mapping
@@ -14,9 +13,8 @@ DATA = Path(__file__).parent / "data"
 
 @dataclass(frozen=True)
 class Residue:
-    """One residue type's atoms, in the pipeline's order, and `conformers` `[C, A, 3]`
-    (one or more reference conformers to choose from). `extra`: further per-atom arrays a
-    pipeline needs (e.g. hydrogen counts)."""
+    """One residue type's atoms in the pipeline's order, with one or more reference
+    conformers."""
 
     atoms: tuple[str, ...]
     elements: np.ndarray  # [A] atomic numbers
@@ -26,7 +24,7 @@ class Residue:
 
 
 class ResidueTable(Mapping[str, Residue]):
-    """Residues by three-letter name (`UNK` for X)."""
+    """Map three-letter residue names to residues, with `UNK` for X."""
 
     def __init__(self, residues: dict[str, Residue]):
         self._residues = dict(residues)
@@ -54,7 +52,7 @@ class ResidueTable(Mapping[str, Residue]):
     @classmethod
     @functools.cache
     def load(cls, name: str) -> "ResidueTable":
-        """The table `jfold/featurize/data/<name>.npz`, read once."""
+        """Load the table `jfold/featurize/data/<name>.npz`, caching the result."""
         with np.load(DATA / f"{name}.npz", allow_pickle=False) as data:
             arrays = {k: data[k] for k in data.files}
         residues = {}

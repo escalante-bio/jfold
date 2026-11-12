@@ -1,16 +1,7 @@
-"""BioEmu2's model-specific pieces.
-
-BioEmu2 is a `jfold.model.StructureModel` without a confidence head. Its trunk is the shared
-MSA module and a PairMixer stack (`jfold.model.Trunk`, in `ConditionedTrunk` with the
-unconditional branch); its input embedder is `jfold.blocks.inputs.InputEmbedder`. What
-differs: DiT-style adaLN-Zero transformer layers (plugged into
-`jfold.blocks.diffusion.DiffusionTransformerLayer`), method and contact conditioning of the
-trunk (`ConditionedTrunkInit`), and a dual-stream structure module (`DualStreamModule`, the
-diffusion slot) that updates tokens and atoms side by side, coupled after every layer, with
-optional conditioning on a companion frame and lag time (dynamics). The conditioning is the
-features' `extras` (`Conditioning`).
-
-Inputs are unbatched, with masks that are False for padding."""
+"""BioEmu2's model-specific pieces: adaLN-Zero transformer layers, method and contact
+conditioning of the trunk, and a dual-stream structure module that updates tokens and atoms
+side by side. BioEmu2 has no confidence head, and its conditioning inputs are stored in the
+features' `extras`."""
 
 import equinox as eqx
 import jax
@@ -50,13 +41,8 @@ NUM_NAME_CHARS, NUM_NAME_CHAR_BINS = 4, 64
 NUM_POCKET_CLASSES = 4
 
 
-# Transformer layers ------------------------------------------------------------------------
-
-
 class ZeroAdaLN(eqx.Module):
-    """DiT's adaLN-Zero: `linear(silu(norm(s)))` splits into a scale `α`, a shift `β` (each
-    as wide as `a`) and a gate `γ`; the branch reads `norm_a(a) (1 + α) + β` and its output
-    is scaled by `γ`."""
+    """DiT's adaLN-Zero, returning `norm_a(a) (1 + α) + β` and the gate `γ`."""
 
     norm_a: LayerNorm  # no scale or offset
     norm_s: LayerNorm
@@ -73,8 +59,7 @@ class ZeroAdaLN(eqx.Module):
 
 
 class ZeroConditionedAttention(eqx.Module):
-    """Self-attention with pair bias behind adaLN-Zero (the attention of a
-    `jfold.blocks.diffusion.DiffusionTransformerLayer`)."""
+    """Self-attention with pair bias behind adaLN-Zero."""
 
     adaln: ZeroAdaLN
     attention: Attention | LocalAttention
@@ -91,8 +76,7 @@ class ZeroConditionedAttention(eqx.Module):
 
 
 class ZeroConditionedTransition(eqx.Module):
-    """A SwiGLU MLP behind adaLN-Zero (the transition of a
-    `jfold.blocks.diffusion.DiffusionTransformerLayer`, and the dual-stream coupling)."""
+    """A SwiGLU MLP behind adaLN-Zero."""
 
     adaln: ZeroAdaLN
     mlp: SwiGLU
@@ -102,12 +86,8 @@ class ZeroConditionedTransition(eqx.Module):
         return gate * self.mlp(x)
 
 
-# Trunk conditioning --------------------------------------------------------------------------
-
-
 class MethodConditioning(eqx.Module):
-    """Embeddings of each token's experimental method (one-hot), added to the initial single
-    and, as `e_i + e_j`, to the initial pair."""
+    """Embeddings of each token's experimental method for the initial single and pair."""
 
     single: Linear
     pair: SinglesToPair | None
@@ -119,9 +99,8 @@ class MethodConditioning(eqx.Module):
 
 
 class ContactConditioning(eqx.Module):
-    """Pair features from requested contacts. Channels 0 and 1 of `contacts` flag
-    unspecified and unselected pairs, which get learned encodings; the others, with the
-    normalized distance threshold and its Fourier features, are embedded linearly."""
+    """Pair features from requested contacts, with learned encodings for unspecified and
+    unselected pairs."""
 
     fourier: FourierEmbedding
     linear: Linear
@@ -144,8 +123,7 @@ class ContactConditioning(eqx.Module):
 
 
 class ConditionedTrunkInit(AbstractTrunkInit[Features]):
-    """`jfold.blocks.inputs.TrunkInit`, plus method and contact conditioning (the features'
-    `extras`, a `Conditioning`)."""
+    """`jfold.blocks.inputs.TrunkInit` plus method and contact conditioning."""
 
     init: TrunkInit
     method: MethodConditioning | None
@@ -166,12 +144,8 @@ class ConditionedTrunkInit(AbstractTrunkInit[Features]):
         return TrunkInputs(s_inputs=s_inputs, s_init=s, z_init=z)
 
 
-# Dynamics conditioning ------------------------------------------------------------------------
-
-
 class Dynamics(eqx.Module):
-    """A companion frame and lag time to condition on; `is_conditioned=False` (equilibrium
-    sampling, structure prediction) zeroes their contributions."""
+    """A companion frame and lag time, ignored when `is_conditioned` is False."""
 
     coords: Float[Array, "N 3"]
     lag: Float[Array, ""]
@@ -179,8 +153,8 @@ class Dynamics(eqx.Module):
 
 
 class DampedHarmonicEmbedding(eqx.Module):
-    """`exp(-t/τ_k)`, then that envelope times `sin` and `cos` of `2π q t/τ_k` for each
-    quality factor `q`."""
+    """Embed `t` as envelopes `exp(-t/τ_k)` and those envelopes times `sin` and `cos` of `2π
+    q t/τ_k`."""
 
     taus: Float[Array, " K"]
     quality_factors: Float[Array, " Q"]
@@ -199,8 +173,7 @@ class DampedHarmonicEmbedding(eqx.Module):
 
 
 class LagGate(eqx.Module):
-    """A positive mixture of exponential decays in the lag time:
-    `Σ_k softplus(w_k) exp(-t/τ_k)`."""
+    """A positive mixture of exponential decays in the lag time."""
 
     taus: Float[Array, " K"]
     log_weight: Float[Array, " K"]
@@ -223,8 +196,7 @@ class FrameConditioning(eqx.Module):
 
 
 class SingleConditioning(eqx.Module):
-    """`jfold.blocks.denoiser.DiffusionConditioning`, with an embedding of the lag time added to
-    the single before its transitions."""
+    """`DiffusionConditioning` with a lag-time embedding added before its transitions."""
 
     conditioning: DiffusionConditioning
     lag_embedding: DampedHarmonicEmbedding | None = None
@@ -252,13 +224,8 @@ class SingleConditioning(eqx.Module):
         return s
 
 
-# Dual-stream structure module ---------------------------------------------------------------
-
-
 class AtomConditioning(eqx.Module):
-    """The structure module's atom single and windowed pair from the reference conformers
-    and the trunk (`jfold.blocks.atoms.AtomAttentionEncoder.condition` without an atom
-    transformer), and each step's atom queries."""
+    """Build the structure module's atom single, windowed pair and per-step atom queries."""
 
     embed_features: Linear  # atom feature vector -> Ca
     pair_embedding: AtomPairEmbedding
@@ -276,8 +243,7 @@ class AtomConditioning(eqx.Module):
         s_trunk: Float[Array, "T Cs"],
         z_trunk: Float[Array, "T T Cz"],
     ) -> tuple[Float[Array, "N Ca"], Float[Array, "NW queries keys Cp"]]:
-        """The queries' starting point `q` and the windowed pair `p` (the trunk-conditioned
-        atom single only shapes the pair)."""
+        """Return the queries' starting point and the windowed pair."""
         windows, mask = self.windows, atoms.mask
         q = self.embed_features(atoms.features)
         p = self.pair_embedding(atoms.ref_pos, atoms.ref_space_uid, mask, windows)
@@ -298,8 +264,8 @@ class AtomConditioning(eqx.Module):
 
 
 class DualStreamCoupling(eqx.Module):
-    """Each atom reads its token, and each token its center atom, through adaLN-Zero
-    SwiGLU mixers on the concatenated pair of representations."""
+    """Couple the streams: each atom reads its token and each token reads its centre atom.
+    """
 
     to_atoms: ZeroConditionedTransition  # [s of the atom's token, q] -> Ca
     to_tokens: ZeroConditionedTransition  # [q of the token's center atom, s] -> Cs
@@ -319,9 +285,7 @@ class DualStreamCoupling(eqx.Module):
 
 
 class DualStreamTransformer(eqx.Module):
-    """Stacked dual-stream layers: in each, an atom layer in windows, a token layer, then
-    the coupling. Each stream's attention biases come from its pair alone, so a sampler
-    computes them once (`atoms.pair_biases`, `tokens.pair_biases`)."""
+    """Stacked dual-stream layers, each an atom layer, a token layer and the coupling."""
 
     atoms: DiffusionTransformer  # within atom windows
     tokens: DiffusionTransformer
@@ -353,7 +317,7 @@ class DualStreamTransformer(eqx.Module):
 
 
 class Readout(eqx.Module):
-    """Position updates from each atom and its token."""
+    """Compute position updates from each atom and its token."""
 
     linear_s: Linear
     linear_q: Linear
@@ -377,15 +341,14 @@ class DualStreamContext(eqx.Module):
     token_biases: Float[Array, "L heads T T"]
     atom_to_token: Int[Array, " N"]
     center_atom: Int[Array, " T"]
-    atom_mask: Bool[Array, " N"]  # the atoms the denoiser moves: what a sampler centres on
+    atom_mask: Bool[Array, " N"]  # the atoms the denoiser moves, which a sampler centres on
     coordinate_mask: Bool[Array, " N"]
     token_mask: Bool[Array, " T"]
     dynamics: Dynamics | None = None
 
 
 class DualStreamModule(AbstractDiffusionModule[Features]):
-    """BioEmu2's structure module, with EDM preconditioning, conditioned on the features'
-    dynamics, if any."""
+    """BioEmu2's structure module, with EDM preconditioning."""
 
     conditioning: SingleConditioning
     atoms: AtomConditioning
@@ -427,7 +390,6 @@ class DualStreamModule(AbstractDiffusionModule[Features]):
         x_noisy: Float[Array, "N 3"],
         t: Float[Array, ""],
     ) -> Float[Array, "N 3"]:
-        """The denoised positions at noise level `t`."""
         sigma_data, dynamics = self.sigma_data, context.dynamics
         r = jnp.where(context.coordinate_mask[:, None], x_noisy, 0.0)
         r = r / jnp.sqrt(t**2 + sigma_data**2)
@@ -450,15 +412,11 @@ class DualStreamModule(AbstractDiffusionModule[Features]):
         return sigma_data**2 / scale * x_noisy + sigma_data * t / jnp.sqrt(scale) * r_update
 
 
-# Whole model ---------------------------------------------------------------------------------
-
 NUM_METHODS = 17
 
 
 class Conditioning(eqx.Module):
-    """BioEmu2's inputs beyond the shared ones (`jfold.model.Features.extras`): method and
-    contact conditioning of the trunk, the structure module's atoms, and optionally
-    dynamics."""
+    """BioEmu2's inputs beyond the shared ones, stored in `Features.extras`."""
 
     method: Float[Array, "T M"]  # one-hot experimental method
     contacts: Float[Array, "T T 5"]
@@ -488,7 +446,7 @@ class ConditionedTrunk(AbstractTrunk[Features]):
         return self.trunk(features, inputs, state, key=key)
 
     def unconditional_state(self, inputs: TrunkInputs) -> TrunkState:
-        """The trunk output without the MSA module and PairMixer stack."""
+        """Return the trunk output without the MSA module and PairMixer stack."""
         z = inputs.z_init + self.unconditional(self.trunk.recycle_z.norm(inputs.z_init))
         return TrunkState(s=inputs.s_init, z=z)
 
@@ -499,8 +457,7 @@ def atom_features(
     element: Int[Array, " N"],
     name_chars: Int[Array, "N 4"],
 ) -> Float[Array, "N 388"]:
-    """The atom feature vector, in the column order `convert.bioemu2` lays out: position,
-    charge, element and name characters (one-hot)."""
+    """Build the atom feature vector in the column order `convert.bioemu2` expects."""
     return jnp.concatenate(
         [
             ref_pos,
@@ -518,8 +475,6 @@ def token_features(
     deletion_mean: Float[Array, " T"],
     pocket: Int[Array, " T"],
 ) -> Float[Array, "T 71"]:
-    """The token feature vector: residue-type probabilities (one-hot for a fixed sequence),
-    MSA profile, deletion mean and pocket class (one-hot)."""
     return jnp.concatenate(
         [
             res_type,
@@ -537,20 +492,14 @@ def msa_features(
     deletion_value: Float[Array, "S T"],
     paired: Float[Array, "S T"] | None,
 ) -> Float[Array, "S T F"]:
-    """The MSA feature vector: residue probabilities (one-hot for a fixed alignment),
-    has-deletion, deletion value and, if the model reads it, whether the row is paired."""
+    """Build the MSA feature vector, with the paired flag only if `paired` is given."""
     extra = [has_deletion, deletion_value] + ([] if paired is None else [paired])
     return jnp.concatenate([msa] + [x[..., None] for x in extra], axis=-1)
 
 
 def features(f: dict, *, paired: bool = True) -> Features:
-    """`Features` (BioEmu2's `Conditioning` as their `extras`) from a BioEmu2 feature dict
-    (`bioemu2.biomoa.utils.feature_converter` output, unbatched). `paired`: whether the
-    model reads the MSA's pairing flag.
-
-    Arrays may be numpy or JAX, traced under `jit` or not. `res_type` is class indices
-    or probability vectors over the 33 token types, and `msa` probability vectors (both
-    soft for a designed sequence)."""
+    """Build `Features` from a BioEmu2 feature dict, where `res_type` and `msa` may be soft.
+    Set `paired` if the model reads the MSA's pairing flag."""
     a = arrays(f)
     f32 = jnp.float32
     num_tokens = a["asym_id"].shape[0]

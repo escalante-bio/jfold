@@ -1,5 +1,4 @@
-"""Each view's `atom_sites` describes its features' atoms: the real atoms first, with the
-names, elements and tokens the features encode."""
+"""Check that each view's `atom_sites` describes its features' atoms."""
 
 import importlib
 
@@ -12,7 +11,7 @@ NAME_KEYS = ("ref_atom_name_chars", "name_encoding")
 ELEMENT_KEYS = ("ref_element", "element")
 MASK_KEYS = ("atom_pad_mask", "atom_attention_mask", "atom_mask")
 TOKEN_KEYS = ("atom_to_token_idx", "atom_to_token", "atom_to_token_index", "token_idx_at_atom")
-# Views whose element one-hot has class Z - 1 for atomic number Z (the rest: class Z).
+# Views whose element one-hot uses class Z - 1 for atomic number Z. The others use class Z.
 ELEMENT_FROM_ZERO = {"mol1", "opendde", "openfold3", "protenix"}
 
 
@@ -21,7 +20,7 @@ def _first(f: dict, keys: tuple[str, ...]) -> np.ndarray | None:
 
 
 def _indices(x: np.ndarray, ndim: int) -> np.ndarray:
-    """Class indices, from indices or one-hots."""
+    """Return class indices from either indices or one-hots."""
     return x.argmax(-1) if x.ndim > ndim else x
 
 

@@ -1,4 +1,4 @@
-"""ProMERA (`promera_2606.ckpt` from `bjing-mit/promera`), as `python -m promera` loads it."""
+"""ProMERA (`promera_2606.ckpt` from `bjing-mit/promera`), loaded as `python -m promera` does."""
 
 import os
 from pathlib import Path
@@ -11,17 +11,13 @@ REPO, FILENAME = "bjing-mit/promera", "promera_2606.ckpt"
 
 
 def _fetch(directory: Path) -> None:
-    """Into the Hugging Face cache, linked from `directory`."""
     from huggingface_hub import hf_hub_download
 
     os.symlink(hf_hub_download(REPO, FILENAME), directory / FILENAME)
 
 
 def _build(checkpoint: Path):
-    """As `python -m promera` builds it: the package's model config (`model/config.yaml`),
-    then the checkpoint's EMA weights (`promera.utils.load_weights`), loaded strictly here
-    so every tensor is accounted for. Building and loading run on the CPU; only the
-    forward pass needs cuequivariance's CUDA kernels."""
+    """Build as `python -m promera` does and load the EMA weights strictly, on the CPU."""
     import torch
     from omegaconf import OmegaConf
     from promera.model import model as promera_model

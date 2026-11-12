@@ -1,13 +1,7 @@
-"""Torch-free featurization: a system (chains, sequences, MSAs) to each model's features.
-
-`jfold.featurize.views.<model>.features(system, ...)` returns the feature dict that model's
-upstream featurization produces, which `jfold.models.<model>.features` takes unchanged;
-`atom_sites(system)` says what each of its atoms is (`AtomSites`, which writes PDB files).
-Each view's conventions (vocabulary, atoms, reference conformers, ids, MSA rules) are
-documented in `docs/upstream-featurization/`.
-
-Scope: proteins (standard residues and X), unpaired MSAs.
-"""
+"""Featurize systems of protein chains for each model without torch.
+`jfold.featurize.views.<model>.features(system)` returns the feature dict of that model's
+upstream featurization, and `docs/upstream-featurization/` documents each view's
+conventions."""
 
 from jfold.featurize.a3m import A3M, parse_a3m
 from jfold.featurize.residues import Residue, ResidueTable

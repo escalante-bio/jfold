@@ -1,8 +1,5 @@
-"""The diffusion module (AF3 Algorithms 20 and 21): denoise atom positions given the trunk.
-
-`DiffusionModule.prepare` (or `context`, from arrays) computes what depends only on the
-trunk and the reference conformers, once; `__call__` is one denoising step. Inputs are
-unbatched: tokens `[T, ...]` and atoms `[N, ...]`, with masks that are False for padding."""
+"""The diffusion module of AF3 Algorithms 20 and 21, which denoises atom positions given
+the trunk output."""
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -16,7 +13,7 @@ from jfold.slots import AbstractDiffusionModule, Features, TrunkInputs, TrunkSta
 
 
 class FourierEmbedding(eqx.Module):
-    """`cos(2π (t w + b))` with fixed random `w` and `b`."""
+    """Compute `cos(2π (t w + b))` with fixed random `w` and `b`."""
 
     weight: Float[Array, " C"]
     bias: Float[Array, " C"]
@@ -26,8 +23,8 @@ class FourierEmbedding(eqx.Module):
 
 
 class DiffusionConditioning(eqx.Module):
-    """AF3 Algorithm 21: the pair conditioned on relative positions (`pair`, once per
-    trunk) and the single conditioned on the noise level (`single`, every step)."""
+    """AF3 Algorithm 21, whose `pair` runs once per trunk output and whose `single`
+    conditions on the noise level at every step."""
 
     norm_z: LayerNorm
     linear_z: Linear  # [z_trunk, relative positions] -> Cz
@@ -39,7 +36,7 @@ class DiffusionConditioning(eqx.Module):
     linear_noise: Linear
     transitions_s: tuple[Transition, ...]
     sigma_data: float = eqx.field(static=True)
-    # OpenDDE narrows the trunk pair to the diffusion module's width first.
+    # OpenDDE projects the trunk pair down to the diffusion module's width first.
     norm_z_trunk: LayerNorm | None = None
     linear_z_trunk: Linear | None = None
 
@@ -65,7 +62,7 @@ class DiffusionConditioning(eqx.Module):
 
 
 class DiffusionContext(eqx.Module):
-    """Everything a denoising step needs that depends only on the trunk."""
+    """The inputs to a denoising step that depend only on the trunk output."""
 
     s_trunk: Float[Array, "T Cs"]
     s_inputs: Float[Array, "T Ci"]
@@ -79,12 +76,12 @@ class DiffusionContext(eqx.Module):
 
     @property
     def atom_mask(self) -> Bool[Array, " N"]:
-        """The real (not padding) atoms: what a sampler centres and aligns on."""
+        """Return the mask of real atoms, which a sampler centres and aligns on."""
         return self.atoms.mask
 
 
 class DiffusionModule(AbstractDiffusionModule[Features]):
-    """AF3 Algorithm 20, with EDM preconditioning."""
+    """The diffusion module from AF3 Algorithm 20, with EDM preconditioning."""
 
     conditioning: DiffusionConditioning
     encoder: AtomAttentionEncoder
@@ -93,8 +90,7 @@ class DiffusionModule(AbstractDiffusionModule[Features]):
     transformer: DiffusionTransformer
     norm_a: LayerNorm
     decoder: AtomAttentionDecoder
-    # The relative position features as the pair conditioning reads them: projected
-    # (Protenix lineage, Boltz-2), or raw (OpenFold3).
+    # Identity for OpenFold3, which conditions on the raw relative position features.
     relative_positions: Linear | Identity = eqx.field(default_factory=Identity)
 
     @property
@@ -120,8 +116,7 @@ class DiffusionModule(AbstractDiffusionModule[Features]):
         relative_position_features: Float[Array, "T T R"],
         token_mask: Bool[Array, " T"],
     ) -> DiffusionContext:
-        """The context from the trunk's outputs, for tokens `[T]` and atoms `[N]` of any
-        kind (OpenDDE's structural tokens)."""
+        """Compute the denoising context from arrays, for any kind of token."""
         relative_positions = self.relative_positions(relative_position_features)
         z = self.conditioning.pair(z_trunk, relative_positions)
         q, c, p = self.encoder.condition(atoms, s_trunk, z)
@@ -143,7 +138,7 @@ class DiffusionModule(AbstractDiffusionModule[Features]):
         x_noisy: Float[Array, "N 3"],
         t: Float[Array, ""],
     ) -> Float[Array, "N 3"]:
-        """The denoised positions at noise level `t`."""
+        """Return the denoised positions at noise level `t`."""
         atoms, sigma_data = context.atoms, self.sigma_data
         s = self.conditioning.single(context.s_trunk, context.s_inputs, t)
         r = x_noisy / jnp.sqrt(t**2 + sigma_data**2)

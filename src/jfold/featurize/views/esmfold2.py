@@ -1,9 +1,5 @@
-"""ESMFold2's features, as `esm`'s `ESMFold2InputBuilder.prepare_input` produces them for
-proteins (see `docs/upstream-featurization/esmfold2.md`): the dict `jfold.models.esmfold2.features`
-takes, plus ESMC's packed token inputs (`lm_input_ids`, `lm_sequence_id`, `lm_positions`).
-
-Deterministic: reference conformers are the raw CCD "Computed" conformers of
-ESMFold2's own pickle, unposed, and the MSA rows are taken in order."""
+"""Featurize proteins for ESMFold2 as `esm`'s `ESMFold2InputBuilder.prepare_input` does,
+plus ESMC's packed token inputs. See `docs/upstream-featurization/esmfold2.md`."""
 
 import re
 
@@ -16,11 +12,11 @@ from jfold.featurize.sites import AtomSites
 from jfold.featurize.sites import atom_sites as _atom_sites
 from jfold.featurize.system import THREE_LETTER, System
 
-# Boltz's 33 classes: PAD, GAP, the 20 amino acids by three-letter code, UNK, RNA, DNA.
+# Boltz's 33 token classes.
 GAP, UNK = 1, 22
 _AMINO_ACIDS = sorted(name for name in THREE_LETTER.values() if name != "UNK")
 TOKEN = {k: 2 + _AMINO_ACIDS.index(v) for k, v in THREE_LETTER.items() if k != "X"} | {"X": UNK}
-# ESMC's sequence vocabulary: BOS 0, PAD 1, EOS 2, the amino acids from 4, X 24.
+# ESMC's token ids.
 BOS, EOS = 0, 2
 ESMC_TOKEN = {c: 4 + i for i, c in enumerate("LAGVSERTIDPKQNFYMHWC")} | {"X": 24}
 ATOM_WINDOW = 32
@@ -33,9 +29,6 @@ def residues() -> ResidueTable:
 
 
 def _chain_msa(chain, max_sequences: int | None) -> tuple[np.ndarray, np.ndarray, list[int]]:
-    """A chain's MSA as residue classes `[S, L]`, deletion counts `[S, L]` and each row's
-    taxon (`key=N` in its header, else -1): its a3m (the first record as the query row,
-    unchecked against the sequence), or the sequence alone."""
     if chain.msa is None:
         classes = np.array([[TOKEN[c] for c in chain.sequence]], np.int64)
         return classes, np.zeros(classes.shape, np.float32), [-1]
@@ -55,10 +48,6 @@ def _chain_msa(chain, max_sequences: int | None) -> tuple[np.ndarray, np.ndarray
 
 
 def _msa_rows(taxa: list[list[int]]) -> list[list[int]]:
-    """Which row of each chain's MSA fills each feature row (-1: gap), as upstream's
-    `construct_paired_msa`: the queries; then rows sharing a `key=` taxon (one that
-    occurs at least twice outside the queries), side by side; then every chain's remaining
-    rows side by side, in order."""
     by_taxon: dict[int, list[tuple[int, int]]] = {}
     for c, chain_taxa in enumerate(taxa):
         for row, taxon in enumerate(chain_taxa):
@@ -96,9 +85,8 @@ def _msa_rows(taxa: list[list[int]]) -> list[list[int]]:
 
 
 def lm_inputs(asym_id: np.ndarray, input_ids: np.ndarray) -> dict[str, np.ndarray]:
-    """ESMC's packed input for protein-only tokens, as upstream's
-    `compute_lm_hidden_states` builds it: each chain (in `asym_id` order) wrapped in BOS
-    and EOS, chains concatenated; each token's row in it (`lm_positions`)."""
+    """Pack ESMC's input with each chain wrapped in BOS and EOS, as
+    `compute_lm_hidden_states` does."""
     ids, positions = [], np.zeros(len(asym_id), np.int64)
     for chain in np.unique(asym_id):
         tokens = np.flatnonzero(asym_id == chain)
@@ -113,13 +101,12 @@ def lm_inputs(asym_id: np.ndarray, input_ids: np.ndarray) -> dict[str, np.ndarra
 
 
 def features(system: System, *, max_sequences: int | None = None) -> dict[str, np.ndarray]:
-    """The feature dict for `system`. `max_sequences`: keep only each a3m's first records
-    (`MSA.from_a3m`'s `max_sequences`; None keeps all, as upstream's default)."""
+    """Return ESMFold2's feature dict, keeping only each a3m's first `max_sequences` records
+    if given."""
     system = system.without_templates("ESMFold2")
     table = residues()
     chains = system.chains
 
-    # Tokens: chains in input order; entities by sequence, in order of first appearance.
     entities: dict[str, int] = {}
     copies: dict[str, int] = {}
     res_type, input_ids, asym_id, entity_id, sym_id, residue_index = [], [], [], [], [], []
@@ -137,7 +124,6 @@ def features(system: System, *, max_sequences: int | None = None) -> dict[str, n
     asym_id = np.array(asym_id, np.int64)
     residue_index = np.array(residue_index, np.int64)
 
-    # Atoms: each residue's table entry (no OXT; UNK is N CA C O), in token order.
     coords, charge, element, names, token_of_atom = [], [], [], [], []
     distogram_atom, frames = [], []
     for token, residue in enumerate(c for chain in chains for c in chain.sequence):
@@ -145,7 +131,7 @@ def features(system: System, *, max_sequences: int | None = None) -> dict[str, n
         first = len(token_of_atom)
         index = {a: first + i for i, a in enumerate(r.atoms)}
         distogram_atom.append(index.get("CB", index.get("CA", first)))
-        # N, CA, C; the unknown residue's frame is its first atom three times.
+        # Upstream uses the first atom three times as the unknown residue's frame.
         frames.append([first] * 3 if residue == "X" else [index[a] for a in ("N", "CA", "C")])
         coords.append(r.conformers[0])
         charge.append(r.charges)
@@ -158,8 +144,7 @@ def features(system: System, *, max_sequences: int | None = None) -> dict[str, n
 
     name_chars = [[ord(c) - 32 for c in n.ljust(4)[:4]] for n in names]  # space -> 0
 
-    # Bonds: none between standard residues; an unknown residue is bonded to its
-    # neighbours in the chain.
+    # Upstream bonds only unknown residues, to their neighbours in the chain.
     bonds = np.zeros((num_tokens, num_tokens, 1), np.float32)
     start = 0
     for chain in chains:
@@ -170,8 +155,7 @@ def features(system: System, *, max_sequences: int | None = None) -> dict[str, n
                         bonds[start + i, start + j, 0] = bonds[start + j, start + i, 0] = 1.0
         start += len(chain.sequence)
 
-    # MSA: every chain's rows side by side (row i holds every chain's hit i), `key=`
-    # taxa paired first; exhausted chains and chains without an a3m are gaps.
+    # Chains that run out of rows, or have no a3m, are filled with gaps.
     per_chain = [_chain_msa(chain, max_sequences) for chain in chains]
     rows = _msa_rows([taxa for _, _, taxa in per_chain])
     msa = np.full((len(rows), num_tokens), GAP, np.int64)
@@ -228,5 +212,5 @@ def features(system: System, *, max_sequences: int | None = None) -> dict[str, n
 
 
 def atom_sites(system: System) -> AtomSites:
-    """What each real atom of `features(system)` is (chains in input order)."""
+    """Describe each real atom of `features(system)`, with chains in input order."""
     return _atom_sites(system.chains, residues())

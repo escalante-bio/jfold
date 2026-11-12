@@ -1,16 +1,6 @@
-"""Protenix's features, as `protenix.data.template.featurize` produces them for proteins (see
-`docs/upstream-featurization/protenix.md`): the dict `jfold.models.protenix.features` takes, plus
-upstream's frame, confidence-mask, molecule-type and bond keys. A chain's template is placed
-residue by residue (`protenix_templates`).
-
-Also the code the Mol-1 and OpenDDE views share: the atom layout (CCD heavy atoms, `OXT` on
-each chain's last residue), the reference-conformer encodings and pose, the token ids, both
-MSA conventions (Protenix's, and Mol-1's, which OpenDDE shares) and the template pair
-features.
-
-The only random step upstream is each residue's reference-conformer pose, drawn from numpy's
-global RNG. Here it is drawn from a JAX `key` with the same distribution; without a key the
-conformers are left centred and unposed."""
+"""Featurize proteins for Protenix, with the atom layout, reference conformers, MSA rules
+and template features that the Mol-1 and OpenDDE views share. See
+`docs/upstream-featurization/protenix.md`."""
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -24,12 +14,11 @@ from jfold.featurize.sites import AtomSites
 from jfold.featurize.sites import atom_sites as _atom_sites
 from jfold.featurize.system import AMINO_ACIDS, THREE_LETTER, Chain, System, Template
 
-# `STD_RESIDUES_WITH_GAP`: the 20 amino acids in `AMINO_ACIDS` order, UNK, RNA, DNA, gap.
+# Classes follow upstream's `STD_RESIDUES_WITH_GAP`.
 NUM_CLASSES = 32
 UNK, GAP = 20, 31
 RESTYPE = {aa: i for i, aa in enumerate(AMINO_ACIDS)} | {"X": UNK}
-# MSA characters (`HHBLITS_AA_TO_ID` then `correct_msa_restypes`; Mol-1's
-# `MSA_PROTEIN_SEQ_TO_ID`): every uppercase letter and the gap.
+# MSA classes as Protenix's `HHBLITS_AA_TO_ID` and Mol-1's `MSA_PROTEIN_SEQ_TO_ID` assign.
 MSA_CLASS = RESTYPE | {"B": 3, "Z": 6, "U": 4, "J": UNK, "O": UNK, "-": GAP}
 MAX_MSA_ROWS = 16384
 MAX_PAIRED_ROWS = MAX_MSA_ROWS // 2
@@ -41,14 +30,13 @@ NUM_TEMPLATE_BINS = 39
 
 
 def residues(name: str) -> ResidueTable:
-    """The residue table `name` (`protenix`, `mol1` or `opendde`)."""
     return ResidueTable.load(name)
 
 
 @dataclass(frozen=True)
 class Layout:
-    """The tokens (one per residue, chains in input order) and their atoms: each residue's
-    table atoms in CCD order, without `OXT` except on a chain's last residue."""
+    """The tokens, one per residue, and their atoms, with `OXT` only on each chain's last
+    residue."""
 
     sequence: str  # [T] one-letter codes, chains concatenated
     chain: np.ndarray  # [T] chain index
@@ -58,7 +46,7 @@ class Layout:
     element: np.ndarray  # [N] atomic number
     charge: np.ndarray  # [N] formal charge
     ref_mask: np.ndarray  # [N]
-    conformer: np.ndarray  # [N, 3] float32, the residue's reference conformer, unposed
+    conformer: np.ndarray  # [N, 3] float32 reference conformer, as stored
     atom_to_token: np.ndarray  # [N]
     tokatom: np.ndarray  # [N] position in the residue's CCD atom order
 
@@ -67,7 +55,7 @@ class Layout:
         return len(self.sequence)
 
     def atom(self, token: int, name: str) -> int:
-        """The global index of `token`'s atom `name`."""
+        """Return the global index of `token`'s atom `name`."""
         start, stop = self.atom_start[token], self.atom_start[token + 1]
         return int(start + self.names[start:stop].index(name))
 
@@ -104,12 +92,8 @@ def layout(system: System, table: ResidueTable) -> Layout:
     )
 
 
-# Reference-conformer pose.
-
-
 def centred(lay: Layout) -> np.ndarray:
-    """Each residue's conformer minus its mean over the residue's atoms (`OXT` included),
-    in float32, as `random_transform(..., centralize=True)`."""
+    """Centre each residue's conformer on the mean of its atoms, including `OXT`."""
     return np.concatenate(
         [
             lay.conformer[start:stop] - lay.conformer[start:stop].mean(axis=0)
@@ -119,8 +103,8 @@ def centred(lay: Layout) -> np.ndarray:
 
 
 def rotation_matrices(q: np.ndarray) -> np.ndarray:
-    """Rotation matrices `[..., 3, 3]` of quaternions `[..., 4]` in scalar-last `(x, y, z,
-    w)` order, normalized first: scipy's `Rotation.from_quat(q).as_matrix()`."""
+    """Convert scalar-last quaternions to rotation matrices, as scipy's `Rotation.from_quat`
+    does."""
     q = np.asarray(q, np.float64)
     x, y, z, w = np.moveaxis(q / np.linalg.norm(q, axis=-1, keepdims=True), -1, 0)
     xx, yy, zz, ww = x * x, y * y, z * z, w * w
@@ -143,9 +127,8 @@ def pose(
     *,
     translate_first: bool,
 ) -> np.ndarray:
-    """Each residue's centred conformer moved by its own translation `[T, 3]` and rotation
-    `[T, 3, 3]`, in float64 then cast to float32 as upstream: `(p + t) @ R.T` (Protenix,
-    Mol-1) or `p @ R.T + t` (OpenDDE)."""
+    """Move each residue's centred conformer by `(p + t) @ R.T` if `translate_first`, else
+    by `p @ R.T + t`."""
     p = positions.astype(np.float64)
     t, r = translation[atom_to_token], rotation[atom_to_token]
     if translate_first:
@@ -156,8 +139,7 @@ def pose(
 
 
 def random_pose(key: jax.Array, num_tokens: int) -> tuple[np.ndarray, np.ndarray]:
-    """Per-residue translations `U(-1, 1)^3` and rotations from normalized `N(0, 1)^4`
-    quaternions (`Rotation.random()`), as upstream draws them, from a JAX key."""
+    """Draw per-residue translations and rotations from the distributions upstream uses."""
     k_translation, k_rotation = jax.random.split(key)
     t = jax.random.uniform(k_translation, (num_tokens, 3), minval=-1.0, maxval=1.0)
     q = jax.random.normal(k_rotation, (num_tokens, 4))
@@ -172,9 +154,6 @@ def ref_pos(lay: Layout, key: jax.Array | None, *, translate_first: bool) -> np.
     return pose(positions, lay.atom_to_token, t, r, translate_first=translate_first)
 
 
-# Residue and atom features.
-
-
 def one_hot(index: np.ndarray, num_classes: int, dtype=np.int64) -> np.ndarray:
     return (np.asarray(index)[..., None] == np.arange(num_classes)).astype(dtype)
 
@@ -182,12 +161,10 @@ def one_hot(index: np.ndarray, num_classes: int, dtype=np.int64) -> np.ndarray:
 def residue_features(
     system: System, lay: Layout, key: jax.Array | None, *, translate_first: bool
 ) -> dict[str, np.ndarray]:
-    """The features every Protenix-lineage pipeline computes alike for `system` laid out as
-    `lay`: tokens, ids, atoms and their reference conformers, representative atoms and
-    frames."""
+    """Compute the features Protenix, Mol-1 and OpenDDE share."""
     num_tokens, num_atoms = lay.num_tokens, len(lay.names)
     restype = np.array([RESTYPE[c] for c in lay.sequence])
-    # Every chain is its own entity, `label_entity_id = str(i + 1)`, ranked as strings.
+    # Upstream makes every chain its own entity and ranks the ids `str(i + 1)` as strings.
     labels = [str(i + 1) for i in range(len(system.chains))]
     entity = np.array([sorted(labels).index(label) for label in labels], np.int64)
     ca = np.array([lay.atom(t, "CA") for t in range(num_tokens)])
@@ -235,11 +212,8 @@ def residue_features(
     }
 
 
-# MSAs.
-
-
 def encode(row: str) -> list[int]:
-    """MSA classes of an aligned row; any other character is an error, as in Protenix."""
+    """Return the MSA classes of an aligned row, rejecting unknown characters."""
     try:
         return [MSA_CLASS[c] for c in row]
     except KeyError as e:
@@ -247,13 +221,10 @@ def encode(row: str) -> list[int]:
 
 
 def _profile(msa: np.ndarray) -> np.ndarray:
-    """Column class frequencies `[L, 32]` (float64)."""
     return one_hot(msa, NUM_CLASSES).sum(0) / msa.shape[0]
 
 
 def _pad_rows(blocks: list[np.ndarray], value) -> np.ndarray:
-    """Per-chain row blocks side by side, shallower chains padded with `value` rows
-    (`dense_max`)."""
     depth = max(b.shape[0] for b in blocks)
     return np.concatenate(
         [np.pad(b, ((0, depth - b.shape[0]), (0, 0)), constant_values=value) for b in blocks],
@@ -262,10 +233,7 @@ def _pad_rows(blocks: list[np.ndarray], value) -> np.ndarray:
 
 
 def protenix_msa(system: System) -> dict[str, np.ndarray]:
-    """Protenix's MSA: per distinct sequence (the first chain with it supplies the a3m, or
-    the sequence alone), the a3m's rows as written, deduplicated; profile and deletion mean
-    over those rows. One distinct sequence: those rows, chains side by side. Several: the
-    joint query row, then each chain's rows other than its query."""
+    """Build Protenix's MSA features, deduplicating each distinct sequence's a3m rows."""
     chains = system.chains
     first: dict[str, Chain] = {}
     for c in chains:
@@ -300,7 +268,7 @@ def protenix_msa(system: System) -> dict[str, np.ndarray]:
             msa, deletions = per_sequence[c.sequence]
             keep = ~(msa == q).all(1)
             unpaired.append((msa[keep], deletions[keep]))
-        depth = MAX_MSA_ROWS - 1  # less the query, the one non-gap paired row
+        depth = MAX_MSA_ROWS - 1  # leave room for the joint query row
     msa = np.concatenate(
         [p for p, _ in paired] + [_pad_rows([m[:depth] for m, _ in unpaired], GAP)]
     )[:MAX_MSA_ROWS]
@@ -317,9 +285,6 @@ def protenix_msa(system: System) -> dict[str, np.ndarray]:
 
 
 def _mol1_rows(chain: Chain, use_a3m: bool) -> tuple[np.ndarray, np.ndarray]:
-    """A chain's unpaired MSA by Mol-1's rules (`RawMsa`): the a3m's records deduplicated
-    (lowercase ignored), or the sequence alone; every character outside the alphabet is an
-    insertion; rows padded with 0 (ALA) or cut to the first row's length."""
     if not use_a3m or chain.msa is None:
         return np.array([encode(chain.sequence)], np.int64), np.zeros(
             (1, len(chain.sequence)), np.int64
@@ -352,12 +317,8 @@ def _mol1_rows(chain: Chain, use_a3m: bool) -> tuple[np.ndarray, np.ndarray]:
 
 
 def mol1_msa(system: System, use_msa: bool) -> dict[str, np.ndarray]:
-    """Mol-1's (and OpenDDE's) MSA. With `use_msa`: per chain, a paired block that is the
-    query alone and its unpaired rows (`_mol1_rows`; chains of 4 residues or fewer use the
-    query alone), with profile and deletion mean over the unpaired rows. The paired block
-    comes first, so with one distinct sequence the query appears twice; with several, each
-    chain's unpaired rows equal to its query are dropped. Deletion counts are clipped to
-    int8 for the per-row features. Without `use_msa`: the sequence as the only row."""
+    """Build Mol-1's MSA features, which OpenDDE shares. The query appears twice for a
+    single distinct sequence, and deletion counts are clipped to int8."""
     chains = system.chains
     if not use_msa:
         restype = np.array([RESTYPE[c] for ch in chains for c in ch.sequence])
@@ -393,8 +354,6 @@ def mol1_msa(system: System, use_msa: bool) -> dict[str, np.ndarray]:
     }
 
 
-# Templates.
-
 GLY = RESTYPE["G"]
 # AlphaFold's atom37 names (`residue_constants.atom_types`), in order.
 ATOM37 = (
@@ -406,8 +365,7 @@ MAX_CA_DISTANCE = 150.0  # Mol-1 drops a template with consecutive CAs farther a
 
 
 def empty_templates(num_tokens: int, aatype: list[int]) -> dict[str, np.ndarray]:
-    """Template features with no templates: one slot per entry of `aatype` (the residue
-    class every column of that slot gets), everything else zero."""
+    """Return template features for no templates, with one slot per entry of `aatype`."""
     n = len(aatype)
     return {
         "template_aatype": np.repeat(np.array(aatype, np.int64)[:, None], num_tokens, 1),
@@ -418,12 +376,11 @@ def empty_templates(num_tokens: int, aatype: list[int]) -> dict[str, np.ndarray]
     }
 
 
-# Mol-1 and OpenDDE: one gap slot, then three slots of zero padding (ALA).
+# Mol-1 and OpenDDE use one gap slot, then three slots of zero padding (ALA).
 MOL1_TEMPLATE_AATYPE = [GAP, 0, 0, 0]
 
 
 def _positional(chain: Chain) -> Template:
-    """`chain`'s template, which must have one residue per residue of the chain."""
     template = chain.template
     if len(template.sequence) != len(chain.sequence):
         raise ValueError(
@@ -435,8 +392,6 @@ def _positional(chain: Chain) -> Template:
 
 
 def _gather(atoms: list[Mapping[str, np.ndarray]], names: list[str]):
-    """Each token's atom `names[t]` from its template atoms `atoms[t]`, `[T, 3]` float32,
-    and its mask `[T]` float32 (zero where missing)."""
     positions = np.zeros((len(atoms), 3), np.float32)
     mask = np.zeros(len(atoms), np.float32)
     for t, (residue, name) in enumerate(zip(atoms, names, strict=True)):
@@ -451,13 +406,8 @@ def template_pair_features(
     backbone: list[tuple[str, str, str]],
     epsilon: float = 1e-6,
 ) -> dict[str, np.ndarray]:
-    """One template slot's pair features from each token's template atoms (none for a
-    token without a template residue): the one-hot distogram of the pseudo-beta atoms
-    (`pseudo_beta[t]`; 39 bins of squared distance from 3.25 Å to 50.75 Å, the last
-    open-ended), and the unit vector from each token's backbone CA to every other's in its
-    frame (`backbone[t]` names its N, CA and C), each zeroed where its pair mask is.
-    Protenix's `Templates.as_protenix_dict`, in float32 step for step; Mol-1's
-    `Templates.as_mol_dict` computes the same bits."""
+    """Compute one template slot's distogram and unit-vector pair features as Protenix does,
+    which Mol-1 reproduces bit for bit."""
     pb, pb_mask = _gather(atoms, pseudo_beta)
     (n, n_mask), (ca, ca_mask), (c, c_mask) = (
         _gather(atoms, [names[k] for names in backbone]) for k in range(3)
@@ -487,11 +437,8 @@ def template_pair_features(
 
 
 def protenix_templates(system: System) -> dict[str, np.ndarray]:
-    """Protenix's one template slot (`build_templates_from_chains`,
-    `Templates.as_protenix_dict`): each chain's `template` placed residue by residue (it
-    must have the chain's length; `_extract_chain_template`), with the template's residue
-    types, unresolved residues included; UNK and no atoms on chains without one.
-    Pseudo-beta CB (CA for glycine), frames from N, CA and C."""
+    """Build Protenix's single template slot, placing each chain's template residue by
+    residue."""
     num_tokens = sum(len(c.sequence) for c in system.chains)
     if all(c.template is None for c in system.chains):
         return empty_templates(num_tokens, [UNK])
@@ -514,10 +461,8 @@ def protenix_templates(system: System) -> dict[str, np.ndarray]:
 
 
 def _mol1_centre(chain: Chain, template: Template) -> np.ndarray:
-    """The mean of the template's atom37 atoms (residue by residue in atom37 order, an
-    arginine's NH1 and NH2 swapped when NH1 is the farther from CD), which Mol-1 subtracts
-    from its coordinates (`TemplateHitProcessor._get_atom_coords`); after checking, as
-    `_check_residue_distances` does, that consecutive resolved CAs are within 150 Å."""
+    """Return the mean of the template's atom37 atoms, swapping arginine NH1 and NH2 as
+    Mol-1 does."""
     coords = []
     for letter, residue in zip(template.sequence, template.atoms, strict=True):
         if (
@@ -540,16 +485,9 @@ def _mol1_centre(chain: Chain, template: Template) -> np.ndarray:
 
 
 def mol1_templates(system: System) -> dict[str, np.ndarray]:
-    """Mol-1's four template slots (`InferenceTemplateFeaturizer.make_template_feature`,
-    `Templates.as_mol_dict`) with each chain's `template` given as an AF3-style template
-    JSON (`templatesPath`; `TemplateHitFeaturizer.parse_json_templates`): its resolved
-    residues as the mmCIF, each mapped to the chain residue at its position (the template
-    must have the chain's length). Templates of chains of 4 residues or fewer are ignored.
-
-    Slot 0: the template's residue types, gap where unresolved; coordinates centred on the
-    template's atoms (`_mol1_centre`); pseudo-beta CB (CA for glycine) and frames from N,
-    CA and C, except UNK, whose dense atom slots all point at its N (pseudo-beta N, frame
-    N-N-N). Chains without a template: gap and no atoms. Slots 1-3: zero (ALA)."""
+    """Build Mol-1's four template slots from each chain's template, treated as an AF3-style
+    template JSON. An UNK residue's pseudo-beta atom and frame all use its N atom, as in
+    Mol-1."""
     num_tokens = sum(len(c.sequence) for c in system.chains)
     out = empty_templates(num_tokens, MOL1_TEMPLATE_AATYPE)
     templated = [c.template is not None and len(c.sequence) > SHORT_CHAIN for c in system.chains]
@@ -577,7 +515,7 @@ def mol1_templates(system: System) -> dict[str, np.ndarray]:
     return out
 
 
-# The keys `jfold.models.protenix.features` reads (Mol-1 and OpenDDE included).
+# The keys `jfold.models.protenix.features` reads, which Mol-1 and OpenDDE also use.
 JFOLD_KEYS = (
     "ref_pos", "ref_charge", "ref_mask", "ref_element", "ref_atom_name_chars",
     "ref_space_uid", "atom_to_token_idx", "atom_to_tokatom_idx", "restype", "profile",
@@ -586,8 +524,6 @@ JFOLD_KEYS = (
     "template_aatype", "template_distogram", "template_pseudo_beta_mask",
     "template_unit_vector", "template_backbone_frame_mask",
 )  # fmt: skip
-# Further keys of upstream's dict: token frames, the pLDDT and PAE representative atoms,
-# molecule types and ids, and atom bonds.
 EXTRA_KEYS = (
     "atom_rep_atom_idx", "has_frame", "frame_atom_index", "is_protein", "is_ligand",
     "is_dna", "is_rna", "mol_id", "mol_atom_index", "entity_mol_id", "pae_rep_atom_mask",
@@ -596,9 +532,8 @@ EXTRA_KEYS = (
 
 
 def features(system: System, *, key: jax.Array | None = None) -> dict[str, np.ndarray]:
-    """Protenix's feature dict for `system`, chains' templates included. `key`: draw each
-    residue's reference-conformer pose (translate, then rotate); None leaves the conformers
-    centred and unposed."""
+    """Return Protenix's feature dict, randomly translating then rotating each reference
+    conformer if `key` is given."""
     lay = layout(system, residues("protenix"))
     f = residue_features(system, lay, key, translate_first=True)
     f |= protenix_msa(system)
@@ -608,6 +543,5 @@ def features(system: System, *, key: jax.Array | None = None) -> dict[str, np.nd
 
 
 def atom_sites(system: System) -> AtomSites:
-    """What each real atom of `features(system)` is (chains in input order, `OXT` on each
-    chain's last residue)."""
+    """Describe each real atom of `features(system)`."""
     return _atom_sites(system.chains, residues("protenix"), oxt=True)

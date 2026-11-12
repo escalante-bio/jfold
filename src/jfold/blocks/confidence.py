@@ -1,11 +1,5 @@
-"""The confidence module (AF3 Algorithm 31) and the distogram head.
-
-A Pairformer refines the trunk's single and pair, conditioned on `s_inputs` and on the
-distances between a predicted structure's representative atoms; heads read PAE and PDE
-from the pair and pLDDT and resolved logits from the single, per token or per atom.
-
-Inputs are unbatched: tokens `[T, ...]` and atoms `[N, ...]`, with masks that are False for
-padding."""
+"""The confidence module of AF3 Algorithm 31 and the distogram head, on unbatched inputs
+with masks False for padding."""
 
 import abc
 
@@ -27,8 +21,8 @@ from jfold.slots import (
 
 
 class DistanceEmbedding(eqx.Module):
-    """Pair distances, one-hot over the bins that `edges` separate, embedded linearly
-    (bin `k` holds distances in `(edges[k-1], edges[k]]`; bin 0 those up to `edges[0]`)."""
+    """Embed pair distances as one-hot bins, where bin `k` holds `(edges[k-1], edges[k]]`
+    and bin 0 everything up to `edges[0]`."""
 
     edges: Float[Array, " E"]
     linear: Linear  # E + 1 bins -> Cz
@@ -41,10 +35,8 @@ class DistanceEmbedding(eqx.Module):
 
 
 class PairHead(eqx.Module):
-    """Pair logits: `linear(norm(z))` (PAE), or for a `symmetric` head (PDE, distogram)
-    `linear(norm(z + zᵀ))`, OpenFold3's PDE normalizing the two terms instead
-    (`norm_terms`). With `linear_inter`, pairs of tokens on different chains use their own
-    linear (Boltz-2)."""
+    """Return `linear(norm(z))`, or `linear(norm(z + zᵀ))` if `symmetric`, using
+    `linear_inter` for pairs on different chains if set."""
 
     linear: Linear
     linear_inter: Linear | None = None
@@ -65,13 +57,13 @@ class PairHead(eqx.Module):
 
 
 def pairwise_distances(x: Float[Array, "T 3"]) -> Float[Array, "T T"]:
-    """Pairwise distances, with a finite gradient where they are zero."""
+    """Return pairwise distances, with a finite gradient where a distance is zero."""
     sq = jnp.sum((x[:, None] - x[None, :]) ** 2, axis=-1)
     return jnp.where(sq > 0, jnp.sqrt(jnp.where(sq > 0, sq, 1.0)), 0.0)
 
 
 class TokenHead(eqx.Module):
-    """Per-token logits from the single (Boltz-2's token-level pLDDT and resolved)."""
+    """Compute per-token logits from the single."""
 
     linear: Linear
     norm: LayerNorm | Identity = eqx.field(default_factory=Identity)
@@ -81,8 +73,8 @@ class TokenHead(eqx.Module):
 
 
 class AtomHead(eqx.Module):
-    """Per-atom logits: each atom reads its token's single through weights for its position
-    within the token."""
+    """Compute per-atom logits from each atom's token single, with weights per atom
+    position within the token."""
 
     weight: Float[Array, "P C B"]
     bias: Float[Array, "P B"] | None = None
@@ -94,38 +86,34 @@ class AtomHead(eqx.Module):
         atom_to_token: Int[Array, " N"],
         atom_position: Int[Array, " N"],
     ) -> Float[Array, "N B"]:
-        # Every token through every position's weights, then each atom's entry: gathering
-        # the weights per atom would materialize an [N, C, B] array.
+        # Gathering the weights per atom instead would materialize an [N, C, B] array.
         per_position = jnp.einsum("tc,pcb->tpb", self.norm(s), self.weight)
         logits = per_position[atom_to_token, atom_position]
         return logits if self.bias is None else logits + self.bias[atom_position]
 
 
 class AbstractPairInputs(eqx.Module):
-    """Extra pair inputs to the confidence module, embedded from the features (Boltz-2's
-    `jfold.models.boltz2.PairInputs`)."""
+    """Embed extra pair inputs for the confidence module, such as Boltz-2's."""
 
     @abc.abstractmethod
     def __call__(self, features: Features) -> Float[Array, "T T Cz"]: ...
 
 
 class ConfidenceModule(AbstractConfidenceModule[Features]):
-    """AF3 Algorithm 31 and its heads."""
+    """The confidence module of AF3 Algorithm 31, with its heads."""
 
-    singles_to_pair: SinglesToPair  # s_inputs -> pair
+    singles_to_pair: SinglesToPair  # s_inputs -> Cz
     distances: DistanceEmbedding
     stack: PairformerStack
     pae: PairHead
-    pde: PairHead  # symmetric
+    pde: PairHead
     plddt: AtomHead | TokenHead
     resolved: AtomHead | TokenHead | None  # ProMERA has none
     norm_s: LayerNorm | Identity = eqx.field(default_factory=Identity)
     norm_z: LayerNorm | Identity = eqx.field(default_factory=Identity)
-    norm_s_inputs: LayerNorm | Identity = eqx.field(default_factory=Identity)  # Boltz-2's
-    linear_s_inputs_to_s: Linear | None = None  # Boltz-2 adds s_inputs to the single
-    clamp_s: float | None = eqx.field(static=True, default=None)  # Protenix: before norm_s
-    # Extra pair inputs added to the trunk pair (Boltz-2's relative positions, bonds and
-    # contacts).
+    norm_s_inputs: LayerNorm | Identity = eqx.field(default_factory=Identity)
+    linear_s_inputs_to_s: Linear | None = None
+    clamp_s: float | None = eqx.field(static=True, default=None)  # applied before norm_s
     pair_inputs: AbstractPairInputs | None = None
 
     def __call__(
@@ -164,9 +152,8 @@ class ConfidenceModule(AbstractConfidenceModule[Features]):
         *,
         key: PRNGKeyArray | None = None,
     ) -> ConfidenceLogits:
-        """`rep_coords`: each token's representative atom in the predicted structure.
-        `atom_position`: each atom's index within its token. `pair_features`: added to the
-        trunk pair (what `pair_inputs` embeds)."""
+        """Compute the logits from arrays, with `rep_coords` the predicted positions of
+        each token's representative atom."""
         s, z = s_trunk, z_trunk
         s_inputs = self.norm_s_inputs(s_inputs)
         if self.clamp_s is not None:

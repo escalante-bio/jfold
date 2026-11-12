@@ -1,4 +1,4 @@
-"""`jfold.pretrained.load`: converts a release once, then loads the saved copy."""
+"""Test `jfold.pretrained.load`, which converts a release once and then loads the saved copy."""
 
 import json
 
@@ -48,7 +48,6 @@ def test_unknown_model():
 
 
 def test_loads_from_the_hub_without_converting(tmp_path, monkeypatch):
-    """A converted copy on the hub is downloaded and used as it is."""
     import huggingface_hub
 
     from jfold import io
@@ -71,7 +70,7 @@ def test_loads_from_the_hub_without_converting(tmp_path, monkeypatch):
 
 
 def test_assemble_completes_the_model(tmp_path, monkeypatch):
-    """`assemble` builds on other releases, each loaded (and converted) once."""
+    """Check that `assemble` builds on other releases, loading and converting each once."""
     import dataclasses
 
     calls = []
@@ -84,8 +83,6 @@ def test_assemble_completes_the_model(tmp_path, monkeypatch):
 
 
 def test_unreadable_copy_is_fetched_again(tmp_path, monkeypatch):
-    """A cached copy an older jfold saved (here: a class that no longer exists) is replaced
-    by the hub's."""
     import huggingface_hub
 
     from jfold import io
