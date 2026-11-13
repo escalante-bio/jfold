@@ -1,6 +1,8 @@
-"""Protenix-lineage modules: Protenix, OpenDDE and Mol-1, which share Protenix's layer code."""
+"""Convert Protenix-lineage models: Protenix, OpenDDE, Mol-1 and Mol-1-constraint."""
 
 import dataclasses
+
+import jax.numpy as jnp
 
 from jfold.blocks.atoms import (
     AtomAttentionDecoder,
@@ -58,7 +60,7 @@ from jfold.convert.torch import (
     localize,
 )
 from jfold.model import Recycle, StructureModel, Trunk
-from jfold.models.mol1 import Mol1Pairformer
+from jfold.models.mol1 import ConstraintTrunkInit, Mol1Pairformer
 from jfold.nn import Linear, PairBias, ReluMLP, SinglesToPair, Transition, stack
 from jfold.sampling import UpstreamSampler, masked_centering, no_alignment
 
@@ -76,7 +78,7 @@ def triangle_multiplication(m) -> TriangleMultiplication:
 
 
 def triangle_attention(m) -> TriangleAttention:
-    # Both modules attend around the starting node; the block transposes for the ending one.
+    # Both modules are starting-node ones, and the block transposes the pair for the other.
     if not m.starting:
         raise ValueError("expected a starting-node TriangleAttention")
     return TriangleAttention(
@@ -102,7 +104,7 @@ def attention_pair_bias(m) -> AttentionPairBias:
 
 
 def single_update(m) -> SingleUpdate | None:
-    """The single-track half of a block; None without a single track (`c_s = 0`)."""
+    """Convert a block's single update, or return None if the block has no single track."""
     attn = getattr(m, "attention_pair_bias", None)
     if attn is None:
         return None
@@ -125,12 +127,11 @@ def pairformer_layer(m) -> PairformerLayer:
 
 
 def _rate(m) -> float:
-    """The rate of a block's `dropout_row` (OpenDDE's blocks have none)."""
     return m.dropout_row.r if hasattr(m, "dropout_row") else 0.0
 
 
 def pairmixer_layer(m) -> PairMixerLayer:
-    """Mol-1's `PairMixerBlock`."""
+    """Convert Mol-1's `PairMixerBlock`."""
     return PairMixerLayer(
         tri_mul_out=triangle_multiplication(m.tri_mul_out),
         tri_mul_in=triangle_multiplication(m.tri_mul_in),
@@ -141,15 +142,15 @@ def pairmixer_layer(m) -> PairMixerLayer:
 
 
 def pairformer_stack(m) -> PairformerStack:
-    """`PairformerStack` of Protenix or OpenDDE, or Mol-1's without PairMixer blocks."""
+    """Convert a Protenix, OpenDDE or Mol-1 `PairformerStack` without PairMixer blocks."""
     if getattr(m, "n_pairmixer_blocks", 0) or len(getattr(m, "adapters", ())):
         raise ValueError("Mol-1's trunk stack converts with mol1_pairformer")
     return PairformerStack(layers=stack([pairformer_layer(b) for b in m.blocks]))
 
 
 def mol1_pairformer(m) -> Mol1Pairformer:
-    """Mol-1's trunk `PairformerStack`: PairMixer blocks at the resident pair width, then
-    Pairformer blocks between adapters."""
+    """Convert Mol-1's trunk stack of PairMixer and then adapter-wrapped Pairformer
+    blocks."""
     n_mix = m.n_pairmixer_blocks
     if not 0 < n_mix < len(m.blocks) or set(m.adapters) != {
         f"before_block_{n_mix}",
@@ -198,7 +199,7 @@ def diffusion_transformer_layer(m) -> DiffusionTransformerLayer:
 
 
 def diffusion_transformer(m) -> DiffusionTransformer:
-    """`DiffusionTransformer` of Protenix, OpenDDE or Mol-1."""
+    """Convert a `DiffusionTransformer` of Protenix, OpenDDE or Mol-1."""
     return DiffusionTransformer(
         pair_bias=stack(
             [
@@ -214,15 +215,13 @@ def diffusion_transformer(m) -> DiffusionTransformer:
 
 
 def atom_transformer(m) -> DiffusionTransformer:
-    """`AtomTransformer` of Protenix, OpenDDE or Mol-1."""
+    """Convert an `AtomTransformer` of Protenix, OpenDDE or Mol-1."""
     windows = CenteredWindows(queries=m.n_queries, keys=m.n_keys)
     return localize(diffusion_transformer(m.diffusion_transformer), windows)
 
 
 def atom_encoder(m) -> AtomAttentionEncoder:
-    """`AtomAttentionEncoder` of Protenix, OpenDDE or Mol-1, with or without coordinates
-    (the diffusion module's, or the trunk input embedder's). Features come from
-    `jfold.models.protenix.atom_features`."""
+    """Convert an `AtomAttentionEncoder` of Protenix, OpenDDE or Mol-1."""
     trunk = None
     if m.has_coords:
         trunk = TrunkToAtoms(
@@ -286,9 +285,7 @@ def diffusion_conditioning(m) -> DiffusionConditioning:
 
 
 def diffusion_module(m) -> DiffusionModule:
-    """`DiffusionModule` of Protenix, OpenDDE or Mol-1, reading the relative position
-    features as they come (`structure_model` adds its own encoding,
-    `diffusion_conditioning.relpe`)."""
+    """Convert a `DiffusionModule` of Protenix, OpenDDE or Mol-1."""
     return DiffusionModule(
         conditioning=diffusion_conditioning(m.diffusion_conditioning),
         encoder=atom_encoder(m.atom_attention_encoder),
@@ -323,7 +320,7 @@ def outer_product_mean(m) -> ProjectedOuterProductMean:
 
 
 def msa_layer(m, *, outer_product_first: bool) -> MSALayer:
-    """`MSABlock`; Protenix's and Mol-1's last block has no MSA update."""
+    """Convert an `MSABlock`. In Protenix and Mol-1 the last block has no MSA update."""
     msa = None
     if hasattr(m, "msa_stack"):
         msa = MSAUpdate(
@@ -342,9 +339,7 @@ def msa_layer(m, *, outer_product_first: bool) -> MSALayer:
 
 
 def msa_module(m, *, outer_product_first: bool = True) -> MSAModule:
-    """`MSAModule` of Protenix, OpenDDE or Mol-1, drawing rows per pass as their inference
-    does (`msa_rows`). OpenDDE updates the MSA before the outer product mean
-    (`outer_product_first=False`). Features come from `jfold.models.protenix.msa_features`."""
+    """Convert an `MSAModule` of Protenix, OpenDDE or Mol-1."""
     layers = [msa_layer(b, outer_product_first=outer_product_first) for b in m.blocks]
     last = layers[-1] if layers[-1].msa is None else None
     regular = layers[:-1] if last is not None else layers
@@ -359,14 +354,11 @@ def msa_module(m, *, outer_product_first: bool = True) -> MSAModule:
 
 
 def msa_rows(m) -> dict[str, int | None]:
-    """`MSAModule`'s `max_rows` and `min_rows` for the rows an upstream module draws per pass
-    at inference, the query like any other. OpenDDE: `msa_depth` rows, rows with a residue
-    first (`subsample_msa_feature_dict_valid_first`). Protenix and Mol-1: a uniformly random
-    number of rows, from the test `min_size` to all, at most the test `sample_cutoff`
-    (`sample_msa_feature_dict_random_without_replacement`). A pass draws at most
-    `DEFAULT_MAX_ROWS` rows and masks those past the random number: upstream's result when
-    the number is no larger. Upstream's bound, up to 16384 on the whole MSA, would make
-    every pass compute on every row."""
+    """Return `max_rows` and `min_rows` matching upstream MSA sampling at inference.
+
+    Protenix and Mol-1 draw a random number of rows. A pass reproduces this by masking a
+    draw of at most `DEFAULT_MAX_ROWS` rows, since upstream's cap of up to 16384 would
+    make every pass compute on every row."""
     if hasattr(m, "msa_depth"):
         return {"max_rows": m.msa_depth, "min_rows": None}
     cfg = m.msa_configs
@@ -378,8 +370,7 @@ def msa_rows(m) -> dict[str, int | None]:
 
 
 def template_embedder(m) -> TemplateEmbedder:
-    """`TemplateEmbedder` of Protenix, OpenDDE or Mol-1. Features come from
-    `jfold.models.protenix.template_features`."""
+    """Convert a `TemplateEmbedder` of Protenix, OpenDDE or Mol-1."""
     return TemplateEmbedder(
         norm_z=layer_norm(m.layernorm_z),
         linear_z=linear(m.linear_no_bias_z),
@@ -391,7 +382,7 @@ def template_embedder(m) -> TemplateEmbedder:
 
 
 def confidence_module(m) -> ConfidenceModule:
-    """`ConfidenceHead` of Protenix, OpenDDE or Mol-1 (per-atom pLDDT and resolved)."""
+    """Convert a `ConfidenceHead` of Protenix, OpenDDE or Mol-1."""
     return ConfidenceModule(
         singles_to_pair=SinglesToPair(
             linear_i=linear(m.linear_no_bias_s2), linear_j=linear(m.linear_no_bias_s1)
@@ -414,39 +405,62 @@ def confidence_module(m) -> ConfidenceModule:
 
 
 def distogram_head(m) -> PairHead:
-    """`DistogramHead` (it symmetrizes after its projection)."""
+    """Convert a `DistogramHead`, which symmetrizes after its projection."""
     return PairHead(linear=doubled_bias(m.linear), symmetric=True)
 
 
 def relative_positions(m) -> Linear:
-    """The relative position encoding's projection of
-    `jfold.blocks.inputs.relative_position_features`."""
+    """Convert the relative position encoding's projection."""
     return linear(m.linear_no_bias)
 
 
 def input_embedder(m) -> InputEmbedder:
-    """`InputFeatureEmbedder` of Protenix, OpenDDE or Mol-1. Token features come from
-    `jfold.models.protenix.token_features`."""
+    """Convert an `InputFeatureEmbedder` of Protenix, OpenDDE or Mol-1."""
     return InputEmbedder(encoder=atom_encoder(m.atom_attention_encoder))
 
 
+def mol1_constraints(m) -> Linear:
+    """Convert Mol-1-constraint's `constraint_conditioner` to one bias-free linear on
+    `jfold.models.mol1.constraint_features`."""
+    if not (hasattr(m, "exclusion") and hasattr(m, "contact")):
+        raise ValueError("Mol-1-constraint converts with its EXCLUSION and CONTACT encoders")
+
+    def projected(encoder, vectors):
+        return array(encoder.output_projection.weight) @ array(vectors).T  # [Cz, n]
+
+    return Linear(
+        weight=jnp.concatenate(
+            [
+                projected(m, m.pair_orientation_embedding),
+                projected(m.exclusion, m.exclusion.pair_orientation_embedding),
+                projected(m.contact, m.contact.contact_embedding[None]),
+            ],
+            axis=1,
+        )
+    )
+
+
 def structure_model(m, *, outer_product_first: bool = True) -> StructureModel:
-    """A whole Protenix (`protenix.model.protenix.Protenix`) or Mol-1 (`mol.model.mol.Mol`,
-    with its PairMixer-then-Pairformer stack) model; OpenDDE's residue-level part with
-    `outer_product_first=False`. Inputs come from `jfold.models.protenix.features`."""
+    """Convert a whole Protenix or Mol-1 model, or OpenDDE's residue-level part with
+    `outer_product_first=False`."""
     templates = m.template_embedder if m.template_embedder.n_blocks > 0 else None
     mol1 = getattr(m.pairformer_stack, "n_pairmixer_blocks", 0) > 0
+    trunk_init = TrunkInit(
+        linear_s=linear(m.linear_no_bias_sinit),
+        singles_to_pair=SinglesToPair(
+            linear_i=linear(m.linear_no_bias_zinit1), linear_j=linear(m.linear_no_bias_zinit2)
+        ),
+        relative_positions=relative_positions(m.relative_position_encoding),
+        bonds=linear(m.linear_no_bias_token_bond),
+        pair_from_s_init=True,
+    )
+    if hasattr(m, "constraint_conditioner"):
+        trunk_init = ConstraintTrunkInit(
+            init=trunk_init, constraints=mol1_constraints(m.constraint_conditioner)
+        )
     return StructureModel(
         input_embedder=input_embedder(m.input_embedder),
-        trunk_init=TrunkInit(
-            linear_s=linear(m.linear_no_bias_sinit),
-            singles_to_pair=SinglesToPair(
-                linear_i=linear(m.linear_no_bias_zinit1), linear_j=linear(m.linear_no_bias_zinit2)
-            ),
-            relative_positions=relative_positions(m.relative_position_encoding),
-            bonds=linear(m.linear_no_bias_token_bond),
-            pair_from_s_init=True,
-        ),
+        trunk_init=trunk_init,
         trunk=Trunk(
             recycle_s=Recycle(norm=layer_norm(m.layernorm_s), linear=linear(m.linear_no_bias_s)),
             recycle_z=Recycle(
@@ -467,9 +481,7 @@ def structure_model(m, *, outer_product_first: bool = True) -> StructureModel:
 
 
 def sampling(m) -> UpstreamSampler:
-    """`sample_diffusion`'s settings, from the model's inference noise scheduler and its
-    `sample_diffusion` config: re-centred, randomly rotated and translated, no
-    alignment, the last level replaced by 0."""
+    """Return the sampler settings of upstream `sample_diffusion`."""
     scheduler, cfg = m.inference_noise_scheduler, m.configs.sample_diffusion
     return UpstreamSampler(
         sigma_data=float(scheduler.sigma_data),

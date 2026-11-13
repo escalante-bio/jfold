@@ -1,0 +1,21 @@
+{
+  "dimer_no_constraints": {"system": "dimer", "constraints": {}},
+  "dimer_site": {
+    "system": "dimer",
+    "constraints": {
+      "site": {"source_chains": ["A"], "partner_chains": ["B"], "residue_ids": [["A", 7], ["A", 3]]}
+    }
+  },
+  "dimer_all": {
+    "system": "dimer",
+    "constraints": {
+      "site": {"source_chains": ["B"], "partner_chains": ["A"], "residue_ids": [["B", 2], ["B", 5]]},
+      "exclusion": {"source_chains": ["A"], "partner_chains": ["B"], "residue_ids": [["A", 15], ["A", 18]]},
+      "contact": {"pairs": [[["B", 4], ["A", 10]], [["A", 2], ["A", 20]], [["A", 10], ["B", 4]]]}
+    }
+  },
+  "monomer_contact": {
+    "system": "monomer",
+    "constraints": {"contact": {"pairs": [[["A", 19], ["A", 2]], [["A", 5], ["A", 12]]]}}
+  }
+}

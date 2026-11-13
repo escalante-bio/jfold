@@ -61,8 +61,9 @@ boltz = { git = "https://github.com/escalante-bio/boltz.git" }
 protenix = { git = "https://github.com/escalante-bio/protenij" }
 opendde = { git = "https://github.com/escalante-bio/jopendde.git", subdirectory = "OpenDDE" }
 jopenfold3 = { git = "https://github.com/escalante-bio/jopenfold3.git" }
-# A fork that relaxes version pins that conflict with boltz and protenix.
-molence = { git = "https://github.com/escalante-bio/Mol-1" }
+# A fork of upstream's constraint branch that relaxes version pins that conflict with boltz
+# and protenix.
+molence = { git = "https://github.com/escalante-bio/Mol-1", rev = "9234d48b24cd1eb385056e5bd47387deeb642122" }
 promera = { git = "https://github.com/bjing2016/promera.git" }
 esmjfold2 = { git = "https://github.com/escalante-bio/esmjfold2.git" }
 biojemu2 = { git = "https://github.com/nboyd/biojemu2" }

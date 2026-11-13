@@ -1,7 +1,10 @@
-"""End-to-end parity with the released Mol-1 weights (`mol-1-base`): the trunk, one denoising
-step, confidence and distogram on a small two-chain complex, featurized by Mol-1. Downloads
-the checkpoint and the reference data (`common/`, ~3 GB) into `$MOL_ROOT_DIR` (default
-`~/.cache/jfold/mol1`); run with `pytest -m checkpoint`."""
+"""Compare jfold with upstream Mol-1 on the released weights.
+
+Both `mol-1-base` and `mol-1-constraint` are tested on a small two-chain complex
+featurized by Mol-1, the constraint model with SITE, EXCLUSION and CONTACT all set. The
+test compares the trunk, one denoising step, confidence and distogram. It downloads the
+checkpoints and about 3 GB of reference data into `$MOL_ROOT_DIR` (by default
+`~/.cache/jfold/mol1`). Run it with `pytest -m checkpoint`."""
 
 import os
 import shutil
@@ -35,12 +38,23 @@ def _download(url: str, path: Path) -> None:
     partial.rename(path)
 
 
-def _release_dir() -> Path:
-    """The checkpoint and the reference data featurization reads, downloaded if missing."""
+CONSTRAINTS = {
+    "site": {"source_chains": ["A"], "partner_chains": ["B"], "residue_ids": [["A", 3], ["A", 7]]},
+    "exclusion": {
+        "source_chains": ["A"],
+        "partner_chains": ["B"],
+        "residue_ids": [["A", 15], ["A", 18]],
+    },
+    "contact": [(("A", 10), ("B", 4))],
+}
+
+
+def _release_dir(name: str) -> Path:
+    """Download the checkpoint and the reference data if missing, and return their root."""
     root = Path(os.environ.get("MOL_ROOT_DIR", "~/.cache/jfold/mol1")).expanduser()
-    checkpoint = root / "checkpoint" / "mol-1-base.pt"
+    checkpoint = root / "checkpoint" / f"{name}.pt"
     if not checkpoint.exists():
-        _download(f"{RELEASE_URL}/checkpoint/mol-1-base.pt", checkpoint)
+        _download(f"{RELEASE_URL}/checkpoint/{name}.pt", checkpoint)
     if not (root / "common" / "components.cif").exists():
         archive = root / "common.tar.gz"
         _download(f"{RELEASE_URL}/common.tar.gz", archive)
@@ -50,16 +64,17 @@ def _release_dir() -> Path:
     return root
 
 
-def _reference_model(checkpoint: Path):
-    """`mol-1-base` as `jfold.pretrained` builds it (as `mol pred` does, with plain-PyTorch
-    triangle kernels, on CPU)."""
+def _reference_model(release: str, checkpoint: Path):
+    """Build the upstream model the way `jfold.pretrained` does."""
     from jfold import pretrained
 
-    return pretrained.upstream("mol1_base", checkpoint_path=checkpoint)
+    return pretrained.upstream(release, checkpoint_path=checkpoint)
 
 
-def _featurize(common: Path) -> dict:
-    """Mol-1's feature dict (numpy) for `SEQUENCES`, single-sequence MSAs, no templates."""
+def _featurize(common: Path, constraints: dict | None = None) -> dict:
+    """Featurize `SEQUENCES` with Mol-1, without MSAs or templates.
+
+    If `constraints` is given, add their tensors the way `mol cpred` does."""
     from mol.data.core import ccd
     from mol.data.inference.infer_dataloader import InferenceDataset
 
@@ -77,8 +92,23 @@ def _featurize(common: Path) -> dict:
         mock.patch.object(ccd, "COMPONENTS_FILE", str(common / "components.cif")),
         mock.patch.object(ccd, "RKDIT_MOL_PKL", common / "components.cif.rdkit_mol.pkl"),
     ):
-        data, _, _ = dataset.process_one(sample)
-    return {k: v.numpy() for k, v in data["input_feature_dict"].items()}
+        data, atoms, _ = dataset.process_one(sample)
+    features = data["input_feature_dict"]
+    if constraints is not None:
+        from mol.constraint import features as constraint_features
+
+        # Upstream's input parser adds the task name to each constraint.
+        site, exclusion = (
+            {**constraints[k], "target_id": "complex"} for k in ("site", "exclusion")
+        )
+        features, _ = constraint_features.project_sites(features, atoms, site, site["residue_ids"])
+        features, _ = constraint_features.exclusion_project(
+            features, atoms, exclusion, exclusion["residue_ids"]
+        )
+        features, _ = constraint_features.contact_project(
+            features, atoms, [list(pair) for pair in constraints["contact"]]
+        )
+    return {k: v.numpy() for k, v in features.items()}
 
 
 def _trunk(model, features):
@@ -89,17 +119,26 @@ def _trunk(model, features):
     return inputs, state
 
 
-def test_mol1_base():
+@pytest.mark.parametrize(
+    "release, name, constraints",
+    [("mol1_base", "mol-1-base", None), ("mol1_constraint", "mol-1-constraint", CONSTRAINTS)],
+)
+def test_mol1(release, name, constraints):
     from mol.model.mol import update_input_feature_dict
 
     from jfold.convert import protenix
     from jfold.models import mol1 as mol1_features
     from jfold.slots import TrunkState
 
-    root = _release_dir()
-    reference = _reference_model(root / "checkpoint" / "mol-1-base.pt")
-    feats = _featurize(root / "common")
+    root = _release_dir(name)
+    reference = _reference_model(release, root / "checkpoint" / f"{name}.pt")
+    feats = _featurize(root / "common", constraints)
     t = {k: torch.from_numpy(v) for k, v in feats.items()}
+    if constraints is not None:
+        assert feats["site_mask"] and feats["exclusion_mask"] and feats["contact_pair_mask"].any()
+        with torch.no_grad():
+            update = reference.get_constraint_update(t)
+        assert update.abs().max() > 0
     t = update_input_feature_dict(reference.relative_position_encoding.generate_relp(t))
     n_atoms = feats["ref_pos"].shape[0]
     x_noisy = 16 * np.random.default_rng(0).standard_normal((n_atoms, 3), dtype=np.float32)
@@ -132,7 +171,10 @@ def test_mol1_base():
     assert_schedule(model.sampling, reference.inference_noise_scheduler(N_step=STEPS, device="cpu"))
     features = mol1_features.features(feats)
     inputs, state = eqx.filter_jit(_trunk)(model, features)
-    errors = {
+    errors = {}
+    if constraints is not None:
+        errors["constraint"] = rel_err(model.trunk_init.constraints(features.pair_features), update)
+    errors |= {
         "s_inputs": rel_err(inputs.s_inputs, s_inputs),
         "s": rel_err(state.s, s),
         "z": rel_err(state.z, z),
@@ -153,6 +195,6 @@ def test_mol1_base():
     errors["distogram"] = rel_err(model.distogram(ref_state.z), distogram)
     print(" ".join(f"{k}={v:.1e}" for k, v in errors.items()))
 
-    tolerances = {"s_inputs": 1e-4, "denoised": 1e-4, "distogram": 1e-4}
-    for name, err in errors.items():
-        assert err < tolerances.get(name, 1e-3), (name, err)
+    tolerances = {"constraint": 1e-5, "s_inputs": 1e-4, "denoised": 1e-4, "distogram": 1e-4}
+    for stage, err in errors.items():
+        assert err < tolerances.get(stage, 1e-3), (stage, err)

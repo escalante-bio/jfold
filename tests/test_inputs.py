@@ -123,3 +123,53 @@ def test_openfold3_relative_position_features_match_reference():
     f = make_tokens(0)
     ref = relpos_complex({k: t(v) for k, v in f.items()}, max_relative_idx=32, max_relative_chain=2)
     np.testing.assert_array_equal(np.asarray(_features(f)), ref.numpy())
+
+
+@pytest.mark.parametrize("seed", [0, 1])
+def test_mol1_constraints(seed):
+    """Compare Mol-1-constraint's pair conditioning with upstream's, using random weights."""
+    from types import SimpleNamespace
+
+    from mol.constraint import encoders
+    from mol.constraint.model import ConstraintMol
+
+    from jfold.models import mol1
+
+    c_z, n = 16, 20
+    conditioner = encoders.ResidueSiteConstraintEncoder(c_z=c_z)
+    conditioner.exclusion = encoders.ResidueSiteConstraintEncoder(c_z=c_z)
+    conditioner.contact = encoders.ContactMaskEncoder(c_z)
+    randomize(conditioner, seed)
+    owner = SimpleNamespace(
+        constraint_conditioner=conditioner,
+        exclusion_enabled=True,
+        contact_enabled=True,
+        configs={"constraint_exclusion_d_gap": 1.5},
+    )
+
+    rng = np.random.default_rng(seed)
+    source = np.arange(n) < 12
+    site, excluded = np.zeros(n, bool), np.zeros(n, bool)
+    picked = rng.permutation(12)
+    site[picked[:3]], excluded[picked[3:5]] = True, True
+    pairs = [(int(picked[5]), 13), (int(picked[6]), 17), (2, 9)]
+    f = {
+        "token_index": np.arange(n),
+        "protein_token_mask": np.ones(n, bool),
+        "site_mask": np.array(True),
+        "site_residue_mask": site,
+        "site_partner_token_mask": ~source,
+        "exclusion_mask": np.array(True),
+        "exclusion_residue_mask": excluded,
+        "exclusion_partner_token_mask": ~source,
+        "contact_pair_indices": np.array(sorted(tuple(sorted(p)) for p in pairs) + [(0, 0)]),
+        "contact_pair_mask": np.array([True, True, True, False]),
+    }
+    with torch.no_grad():
+        ref = ConstraintMol.get_constraint_update(owner, {k: t(v) for k, v in f.items()})
+
+    pair = mol1.constraint_pair_features(f, n)
+    ours = protenix.mol1_constraints(conditioner)(pair)
+    assert rel_err(ours, ref) < 1e-5
+
+    assert mol1.constraint_pair_features({"token_index": np.arange(n)}, n) is None
